@@ -1,0 +1,26 @@
+[package]
+name = "wasm-charts"
+version = "0.1.0"
+edition = "2024"
+[lib]
+crate-type =["cdylib","rlib"]
+[dependencies]
+wasm-bindgen = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde-wasm-bindgen = "0.6"
+
+[dependencies.web-sys]
+version = "0.3"
+features = [
+  "CanvasRenderingContext2d",
+  "HtmlCanvasElement",
+  "Window",
+  "Document",
+  "Element",
+  "Performance",
+]
+
+[profile.release]
+opt-level = "s"   # optimize for size — matters more for wasm than for native binaries
+lto = true

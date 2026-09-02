@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WASM Charts</title>
+</head>
+<body>
+    <canvas id="myCanvas" width="400" height="400" style="border:1px solid #000000;"></canvas>
+    <script type="module">
+        import init, { animate_rectangle } from './pkg/wasm_charts.js';
+        await init();
+        animate_rectangle('myCanvas');
+    </script>
+</body>
+</html>
