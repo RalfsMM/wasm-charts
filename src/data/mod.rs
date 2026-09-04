@@ -1,5 +1,6 @@
 pub mod table;
 
+#[derive(Clone)]
 pub struct DataPoint {
     pub label: String,
     pub value: f64,
