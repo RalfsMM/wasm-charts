@@ -7,8 +7,8 @@ pub struct DataPoint {
 }
 
 pub trait Points{
-    fn label_col(&self) -> i32;
-    fn value_col(&self) -> i32;
+    fn label_col(&self) -> usize;
+    fn value_col(&self) -> usize;
 }
 
 pub fn extract_points(table: &table::Table, config: &impl Points) -> Vec<DataPoint> {

@@ -19,6 +19,9 @@ features = [
   "Document",
   "Element",
   "Performance",
+  "DomRect",
+  "MouseEvent",
+  "EventTarget",
 ]
 
 [profile.release]
