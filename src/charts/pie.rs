@@ -92,7 +92,6 @@ pub fn compute_pie_slices(mut points: Vec<DataPoint>) -> Result<Vec<PieSlice>, J
                 if others.percent == 0.0 {
                     others.angle_start = start;
                 }
-                //others.angle_end = angle;
                 others.percent += percent;
                 if others.sub_points.is_none() {
                     others.sub_points = Some(vec![]);
@@ -113,10 +112,8 @@ pub fn compute_pie_slices(mut points: Vec<DataPoint>) -> Result<Vec<PieSlice>, J
 
 #[derive(Clone, Copy)]
 struct SliceAnim {
-    start_ir: f64,    // inner radius at the moment the target last changed
-    target_ir: f64,   // inner radius we're easing toward
-    start_or: f64,    // outer radius at the moment the target last changed
-    target_or: f64,   // outer radius we're easing toward
+    start_r: f64,    // inner radius at the moment the target last changed
+    target_r: f64,   // inner radius we're easing toward
     start_time: f64, // performance.now() timestamp when target last changed
 }
 
@@ -130,34 +127,23 @@ fn ease_out_cubic(t: f64) -> f64 {
 
 /// Given a slice's animation state and the current time, compute the
 /// radius to actually draw this frame.
-fn current_inner_radius(anim: &SliceAnim, now_ms: f64) -> f64 {
+fn current_radius(anim: &SliceAnim, now_ms: f64) -> f64 {
     let elapsed = now_ms - anim.start_time;
     let t = (elapsed / ANIM_DURATION_MS).clamp(0.0, 1.0);
     let eased = ease_out_cubic(t);
-    anim.start_ir + (anim.target_ir - anim.start_ir) * eased
-}
-
-fn current_outer_radius(anim: &SliceAnim, now_ms: f64) -> f64 {
-    let elapsed = now_ms - anim.start_time;
-    let t = (elapsed / ANIM_DURATION_MS).clamp(0.0, 1.0);
-    let eased = ease_out_cubic(t);
-    anim.start_or + (anim.target_or - anim.start_or) * eased
+    anim.start_r + (anim.target_r - anim.start_r) * eased
 }
 
 // ---------- Drawing (pure function of state) ----------
 
-pub fn draw_pie(
-    canvas: &web_sys::HtmlCanvasElement,
-    slices: &[PieSlice],
-    geo: &PieGeometry,
-    radii: &[Vec<f64>],
-) -> Result<(), JsValue> {
+pub fn draw_pie( canvas: &web_sys::HtmlCanvasElement, slices: &[PieSlice], geo: &PieGeometry, radii: &[f64]) -> Result<(), JsValue> {
     let context = crate::canvas::get_context(canvas)?;
     context.clear_rect(0.0, 0.0, canvas.width() as f64, canvas.height() as f64);
 
     for (i, slice) in slices.iter().enumerate() {
-        let outer_r = radii[i][1];
-        let inner_r = radii[i][0];
+        let outer_r = radii[i];
+        let inner_r = outer_r -20.0;
+
 
         context.begin_path();
         context.move_to(geo.cx, geo.cy);
@@ -224,12 +210,12 @@ pub fn render_interactive_pie(canvas_id: &str, slices: Vec<PieSlice>) -> Result<
     let anim_state: Rc<RefCell<Vec<SliceAnim>>> = Rc::new(RefCell::new(
         slices
             .iter()
-            .map(|_| SliceAnim { start_ir: geo.inner_r, target_ir: geo.inner_r, start_or: geo.outer_r, target_or: geo.outer_r, start_time: now_ms })
+            .map(|_| SliceAnim { start_r: geo.outer_r, target_r: geo.outer_r, start_time: now_ms })
             .collect(),
     ));
 
     // --- initial draw, nothing hovered yet ---
-    let initial_radii: Vec<Vec<f64>> = anim_state.borrow().iter().map(|a| vec![a.target_ir, a.target_or]).collect();
+    let initial_radii: Vec<f64> = anim_state.borrow().iter().map(|a| a.target_r).collect();
     draw_pie(&canvas, &slices, &geo, &initial_radii)?;
 
     // --- mousemove: updates hover + sets new animation targets ---
@@ -253,28 +239,15 @@ pub fn render_interactive_pie(canvas_id: &str, slices: Vec<PieSlice>) -> Result<
             let now = web_sys::window().unwrap().performance().unwrap().now();
             let mut anims = anim_for_mouse.borrow_mut();
             for (i, anim) in anims.iter_mut().enumerate() {
-                let new_outer_target = if hit == Some(i) { geo_for_mouse.outer_r + 10.0 } else { geo_for_mouse.outer_r };
-                let new_inner_target = if hit == Some(i) { geo_for_mouse.inner_r + 10.0 } else { geo_for_mouse.inner_r };
+                let new_target = if hit == Some(i) { geo_for_mouse.outer_r + 10.0 } else { geo_for_mouse.outer_r };
 
-                let outer_changed = anim.target_or != new_outer_target;
-                let inner_changed = anim.target_ir != new_inner_target;
+                let changed = anim.target_r != new_target;
 
-                if outer_changed || inner_changed {
-                    // snapshot both current positions using the OLD start_time,
-                    // before either gets overwritten
-                    let cur_or = current_outer_radius(anim, now);
-                    let cur_ir = current_inner_radius(anim, now);
-
-                    if outer_changed {
-                        anim.start_or = cur_or;
-                        anim.target_or = new_outer_target;
-                    }
-                    if inner_changed {
-                        anim.start_ir = cur_ir;
-                        anim.target_ir = new_inner_target;
-                    }
-
-                    anim.start_time = now; // only reset once, after both snapshots are taken
+                if changed {
+                    let cur = current_radius(anim, now);
+                    anim.start_r = cur;
+                    anim.target_r = new_target;
+                    anim.start_time = now; 
                 }
             }
         }
@@ -290,10 +263,10 @@ pub fn render_interactive_pie(canvas_id: &str, slices: Vec<PieSlice>) -> Result<
 
     crate::animation::start_loop(move |_elapsed_ms| {
         let now = web_sys::window().unwrap().performance().unwrap().now();
-        let radii: Vec<Vec<f64>> = anim_for_loop
+        let radii: Vec<f64> = anim_for_loop
             .borrow()
             .iter()
-            .map(|a| vec![current_inner_radius(a, now), current_outer_radius(a, now)])
+            .map(|a| current_radius(a, now))
             .collect();
         let _ = draw_pie(&canvas_for_loop, &slices_for_loop, &geo, &radii);
     })?;
@@ -309,3 +282,4 @@ fn palette_color(index: usize) -> String {
     colors[index % colors.len()].to_string()
 }
 
+fn new_pie_animation(){}
