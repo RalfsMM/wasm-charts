@@ -1,8 +1,6 @@
 use crate::data::{DataPoint, Points};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
-use web_sys::js_sys::Intl::NumberFormatStyle::Percent;
-use std::collections::binary_heap::PeekMut;
 use std::rc::Rc;
 use std::cell::RefCell;
 
@@ -37,7 +35,6 @@ pub struct PieGeometry {
     pub outer_r: f64,
     pub inner_r: f64,
 }
-
 impl Default for PieGeometry {
     fn default() -> Self {
         PieGeometry { cx: 200.0, cy: 200.0, outer_r: 100.0, inner_r: 80.0 }
@@ -55,6 +52,32 @@ pub struct PieSlice {
     pub sub_points: Option<Vec<DataPoint>>, // optional sub-points for drill-down
 }
 
+fn palette_color(index: usize) -> String {
+    let colors = [
+        "#FF6384", "#36A2EB", "#FFCE56", "#4BC0C0", "#9966FF",
+        "#FF9F40", "#E7E9ED", "#76B041", "#F7464A", "#46BFBD",
+    ];
+    colors[index % colors.len()].to_string()
+}
+
+pub struct PieChartHandle {
+    canvas: web_sys::HtmlCanvasElement,
+    running: Rc<RefCell<bool>>,
+    mouse_closure: Closure<dyn FnMut(web_sys::MouseEvent)>,
+    click_closure: Closure<dyn FnMut(web_sys::MouseEvent)>,
+}
+
+impl PieChartHandle {
+    pub fn stop(&self) {
+        *self.running.borrow_mut() = false;
+        let _ = self.canvas.remove_event_listener_with_callback(
+            "mousemove", self.mouse_closure.as_ref().unchecked_ref(),
+        );
+        let _ = self.canvas.remove_event_listener_with_callback(
+            "click", self.click_closure.as_ref().unchecked_ref(),
+        );
+    }
+}
 
 pub fn compute_pie_slices(mut points: Vec<DataPoint>) -> Result<Vec<PieSlice>, JsValue> {
     if points.iter().any(|p| p.value < 0.0) {
@@ -108,57 +131,42 @@ pub fn compute_pie_slices(mut points: Vec<DataPoint>) -> Result<Vec<PieSlice>, J
     Ok(slices)
 }
 
-// ---------- Per-slice animation state (elapsed-time + easing) ----------
 
-#[derive(Clone, Copy)]
-struct SliceAnim {
-    start_r: f64,    // inner radius at the moment the target last changed
-    target_r: f64,   // inner radius we're easing toward
-    start_time: f64, // performance.now() timestamp when target last changed
-}
-
-const ANIM_DURATION_MS: f64 = 200.0;
-
-/// Cubic ease-out: fast start, slow finish. `t` is 0.0..1.0 progress.
-fn ease_out_cubic(t: f64) -> f64 {
-    let t = t.clamp(0.0, 1.0);
-    1.0 - (1.0 - t).powi(3)
-}
-
-/// Given a slice's animation state and the current time, compute the
-/// radius to actually draw this frame.
-fn current_radius(anim: &SliceAnim, now_ms: f64) -> f64 {
-    let elapsed = now_ms - anim.start_time;
-    let t = (elapsed / ANIM_DURATION_MS).clamp(0.0, 1.0);
-    let eased = ease_out_cubic(t);
-    anim.start_r + (anim.target_r - anim.start_r) * eased
-}
 
 // ---------- Drawing (pure function of state) ----------
 
-pub fn draw_pie( canvas: &web_sys::HtmlCanvasElement, slices: &[PieSlice], geo: &PieGeometry, radii: &[f64]) -> Result<(), JsValue> {
+pub fn draw_pie( canvas: &web_sys::HtmlCanvasElement, slices: &[PieSlice], geo: &PieGeometry, radii: &[f64], angles: Vec<&[f64]>) -> Result<(), JsValue> {
     let context = crate::canvas::get_context(canvas)?;
     context.clear_rect(0.0, 0.0, canvas.width() as f64, canvas.height() as f64);
 
     for (i, slice) in slices.iter().enumerate() {
         let outer_r = radii[i];
         let inner_r = outer_r -20.0;
+        let start_angle;
+        let end_angle;
 
+        if angles.len()>0{
+            start_angle = angles[i][0];
+            end_angle = angles[i][1];
+        }else{
+            start_angle = slice.angle_start;
+            end_angle = slice.angle_end;
+        }
 
         context.begin_path();
         context.move_to(geo.cx, geo.cy);
         context
-            .arc(geo.cx, geo.cy, outer_r, slice.angle_start + 0.02, slice.angle_end - 0.02)
+            .arc(geo.cx, geo.cy, outer_r, start_angle + 0.02, end_angle - 0.02)
             .map_err(|_| JsValue::from_str("failed to draw arc"))?;
         context
-            .arc_with_anticlockwise(geo.cx, geo.cy, inner_r, slice.angle_end - 0.02, slice.angle_start + 0.02, true)
+            .arc_with_anticlockwise(geo.cx, geo.cy, inner_r, end_angle - 0.02, start_angle + 0.02, true)
             .map_err(|_| JsValue::from_str("failed to draw arc"))?;
         context.close_path();
         context.set_fill_style_str(&slice.color);
         context.fill();
 
         context.set_fill_style_str("black");
-        let mid_angle = (slice.angle_start + slice.angle_end) / 2.0;
+        let mid_angle = (start_angle + end_angle) / 2.0;
         let label_x;
         if mid_angle < std::f64::consts::PI / 2.0 || mid_angle > std::f64::consts::PI * 3.0 / 2.0 {
             context.set_text_align("left");
@@ -196,9 +204,11 @@ fn hit_test(slices: &[PieSlice], geo: &PieGeometry, mx: f64, my: f64) -> Option<
 
 // ---------- Wiring: mouse events + animation loop ----------
 
-pub fn render_interactive_pie(canvas_id: &str, slices: Vec<PieSlice>) -> Result<(), JsValue> {
+pub fn render_interactive_pie(canvas_id: &str, points: Vec<DataPoint>) -> Result<PieChartHandle, JsValue> {
+    let slices = compute_pie_slices(points)?;
     let canvas = crate::canvas::get_canvas(canvas_id)?;
     let geo = PieGeometry::default();
+    let running = Rc::new(RefCell::new(true));
 
     let now_ms = web_sys::window()
         .and_then(|w| w.performance())
@@ -207,16 +217,16 @@ pub fn render_interactive_pie(canvas_id: &str, slices: Vec<PieSlice>) -> Result<
 
     let slices = Rc::new(slices);
     let hover: Rc<RefCell<Option<usize>>> = Rc::new(RefCell::new(None));
-    let anim_state: Rc<RefCell<Vec<SliceAnim>>> = Rc::new(RefCell::new(
+    let anim_state: Rc<RefCell<Vec<SliceAnimRadius>>> = Rc::new(RefCell::new(
         slices
             .iter()
-            .map(|_| SliceAnim { start_r: geo.outer_r, target_r: geo.outer_r, start_time: now_ms })
+            .map(|_| SliceAnimRadius { start_r: geo.outer_r, target_r: geo.outer_r, start_time: now_ms })
             .collect(),
     ));
 
     // --- initial draw, nothing hovered yet ---
     let initial_radii: Vec<f64> = anim_state.borrow().iter().map(|a| a.target_r).collect();
-    draw_pie(&canvas, &slices, &geo, &initial_radii)?;
+    new_pie_animation(&canvas, &slices, &geo, &initial_radii)?;
 
     // --- mousemove: updates hover + sets new animation targets ---
     let canvas_for_mouse = canvas.clone();
@@ -254,32 +264,98 @@ pub fn render_interactive_pie(canvas_id: &str, slices: Vec<PieSlice>) -> Result<
     });
 
     canvas.add_event_listener_with_callback("mousemove", mouse_closure.as_ref().unchecked_ref())?;
-    mouse_closure.forget();
+
+    // --- click listener
+
+    let canvas_for_click = canvas.clone();
+    let slices_for_click = slices.clone();
+    let geo_for_click = geo;
+    let running_for_click = running.clone();
+    
+    let click_closure = Closure::<dyn FnMut(web_sys::MouseEvent)>::new(move |event: web_sys::MouseEvent| {
+        let rect = canvas_for_click.get_bounding_client_rect();
+        let mx = event.client_x() as f64 - rect.left();
+        let my = event.client_y() as f64 - rect.top();
+
+        let hit = hit_test(&slices_for_click, &geo_for_click, mx, my);
+        if hit.is_some() {
+            for ( i, slice) in slices_for_click.iter().enumerate() {
+                if Some(i) == hit {
+                    if slice.sub_points.is_some() {
+                        let _ = render_interactive_pie(canvas_for_click.id().as_str(), slice.sub_points.clone().unwrap());
+                        break;
+                    }
+                }
+            }
+        }
+    });
+
+    canvas.add_event_listener_with_callback("click", click_closure.as_ref().unchecked_ref())?;
 
     // --- animation loop: redraws every frame using current eased radii ---
     let canvas_for_loop = canvas.clone();
     let slices_for_loop = slices.clone();
     let anim_for_loop = anim_state.clone();
+    let running_for_loop = running.clone();
 
     crate::animation::start_loop(move |_elapsed_ms| {
+        if !*running_for_loop.borrow() {
+            return false;
+        }
         let now = web_sys::window().unwrap().performance().unwrap().now();
-        let radii: Vec<f64> = anim_for_loop
-            .borrow()
-            .iter()
-            .map(|a| current_radius(a, now))
-            .collect();
-        let _ = draw_pie(&canvas_for_loop, &slices_for_loop, &geo, &radii);
+        let radii: Vec<f64> = anim_for_loop.borrow().iter().map(|a| current_radius(a, now)).collect();
+        let _ = draw_pie(&canvas_for_loop, &slices_for_loop, &geo, &radii, vec![]);
+        true
     })?;
+
+    Ok(PieChartHandle { canvas, running, mouse_closure, click_closure })
+}
+
+// ---------- Per-slice animation state (elapsed-time + easing) ----------
+
+#[derive(Clone, Copy)]
+struct SliceAnimRadius {
+    start_r: f64,    // radius at the moment the target last changed
+    target_r: f64,   // radius we're easing toward
+    start_time: f64, // performance.now() timestamp when target last changed
+}
+
+#[derive(Clone, Copy)]
+struct SliceAnimAngle {
+    start_a: f64,    // angle at the moment the target last changed
+    target_a: f64,   // angle we're easing toward
+    start_time: f64, // performance.now() timestamp when target last changed
+}
+
+const ANIM_DURATION_MS: f64 = 200.0;
+
+/// Cubic ease-out: fast start, slow finish. `t` is 0.0..1.0 progress.
+fn ease_out_cubic(t: f64) -> f64 {
+    let t = t.clamp(0.0, 1.0);
+    1.0 - (1.0 - t).powi(3)
+}
+
+/// Given a slice's animation state and the current time, compute the
+/// radius to actually draw this frame.
+fn current_radius(anim: &SliceAnimRadius, now_ms: f64) -> f64 {
+    let elapsed = now_ms - anim.start_time;
+    let t = (elapsed / ANIM_DURATION_MS).clamp(0.0, 1.0);
+    let eased = ease_out_cubic(t);
+    anim.start_r + (anim.target_r - anim.start_r) * eased
+}
+
+fn current_angle(anim: &SliceAnimAngle, now_ms: f64) -> f64 {
+    //let elapsed = now_ms - anim.start_time;
+    //let t = (elapsed / ANIM_DURATION_MS).clamp(0.0, 1.0);
+    //let eased = ease_out_cubic(t);
+    //anim.start_r + (anim.target_r - anim.start_r) * eased
+    0.0
+}
+
+
+fn new_pie_animation(canvas: &web_sys::HtmlCanvasElement, slices: &[PieSlice], geo: &PieGeometry, radii: &[f64]) -> Result<(), JsValue> {
+
+    draw_pie(&canvas, &slices, &geo, &radii, vec![])?;
 
     Ok(())
 }
-
-fn palette_color(index: usize) -> String {
-    let colors = [
-        "#FF6384", "#36A2EB", "#FFCE56", "#4BC0C0", "#9966FF",
-        "#FF9F40", "#E7E9ED", "#76B041", "#F7464A", "#46BFBD",
-    ];
-    colors[index % colors.len()].to_string()
-}
-
-fn new_pie_animation(){}
