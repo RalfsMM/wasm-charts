@@ -65,6 +65,7 @@ pub struct PieChartHandle {
     running: Rc<RefCell<bool>>,
     mouse_closure: Closure<dyn FnMut(web_sys::MouseEvent)>,
     click_closure: Closure<dyn FnMut(web_sys::MouseEvent)>,
+    chart_label: String,
 }
 
 impl PieChartHandle {
@@ -127,7 +128,7 @@ pub fn compute_pie_slices(mut points: Vec<DataPoint>) -> Result<Vec<PieSlice>, J
             let start = angle;
             angle += sweep;
 
-            if (percent > 0.0) && (percent < 5.0) && (others.percent + percent < 10.0) {
+            if (percent > 0.0) && (others.percent + percent < 10.0) {
                 others.angle_end= angle;               
                 others.percent += percent;
                 if others.sub_points.is_none() {
@@ -153,6 +154,20 @@ pub fn compute_pie_slices(mut points: Vec<DataPoint>) -> Result<Vec<PieSlice>, J
 pub fn draw_pie( canvas: &web_sys::HtmlCanvasElement, slices: &[PieSlice], geo: &PieGeometry, radii: &[f64], angles: &Vec<[f64; 2]>) -> Result<(), JsValue> {
     let context = crate::canvas::get_context(canvas)?;
     context.clear_rect(0.0, 0.0, canvas.width() as f64, canvas.height() as f64);
+
+    context.set_fill_style_str("Black");
+    context.set_text_align("left");
+    CHART_STACK.with(|stack| {
+        let charts = stack.borrow();
+        for (i, chart) in charts.iter().enumerate() {
+            let label = format!("{}/", chart.chart_label);
+            context
+                .fill_text(&label, 20.0, 30.0 + i as f64 * 12.0)
+                .map_err(|_| JsValue::from_str("failed to draw chart label"))?;
+        }
+        Ok::<(), JsValue>(())
+    })?;
+
 
     for (i, slice) in slices.iter().enumerate() {
         let outer_r = radii[i];
@@ -217,7 +232,7 @@ fn hit_test(slices: &[PieSlice], geo: &PieGeometry, mx: f64, my: f64) -> Option<
 
 // ---------- Wiring: mouse events + animation loop ----------
 
-pub fn render_interactive_pie(canvas_id: &str, points: Vec<DataPoint>) -> Result<PieChartHandle, JsValue> {
+pub fn render_interactive_pie(canvas_id: &str, points: Vec<DataPoint>, chart_label: String) -> Result<PieChartHandle, JsValue> {
     let slices = compute_pie_slices(points)?;
     let canvas = crate::canvas::get_canvas(canvas_id)?;
     let geo = PieGeometry::default();
@@ -236,11 +251,22 @@ pub fn render_interactive_pie(canvas_id: &str, points: Vec<DataPoint>) -> Result
             .map(|_| SliceAnimRadius { start_r: geo.outer_r, target_r: geo.outer_r, start_time: now_ms })
             .collect(),
     ));
+    
+    const TOTAL_ENTRANCE_DURATION_MS: f64 = 500.0; // the whole circle always takes this long
+    let slice_count = slices.len() as f64;
+    let per_slice_duration = TOTAL_ENTRANCE_DURATION_MS / slice_count;
+
     let angle_anim_state: Rc<RefCell<Vec<SliceAnimAngle>>> = Rc::new(RefCell::new(
         slices
             .iter()
             .enumerate()
-            .map(|(i, slice)| SliceAnimAngle { start_a: slice.angle_start, target_a: slice.angle_end, start_time: now_ms, order: i })
+            .map(|(i, slice)| SliceAnimAngle {
+                start_a: slice.angle_start,
+                target_a: slice.angle_end,
+                start_time: now_ms,
+                order: i,
+                duration_ms: per_slice_duration,
+            })
             .collect(),
     ));
     let current_order: Rc<RefCell<usize>> = Rc::new(RefCell::new(0));
@@ -303,12 +329,12 @@ pub fn render_interactive_pie(canvas_id: &str, points: Vec<DataPoint>) -> Result
                         *running_for_click.borrow_mut() = false;
 
                         CHART_STACK.with(|stack| {
-                            if let Some(old_handle) = stack.borrow_mut().pop() {
+                            if let Some(old_handle) = stack.borrow_mut().last() {
                                 old_handle.stop();
                             }
                         });
 
-                        if let Ok(new_handle) = render_interactive_pie(canvas_for_click.id().as_str(), slice.sub_points.clone().unwrap()) {
+                        if let Ok(new_handle) = render_interactive_pie(canvas_for_click.id().as_str(), slice.sub_points.clone().unwrap(), slice.label.clone()) {
                             CHART_STACK.with(|stack| stack.borrow_mut().push(new_handle));
                         }
 
@@ -339,7 +365,7 @@ pub fn render_interactive_pie(canvas_id: &str, points: Vec<DataPoint>) -> Result
         let order = *current_order.borrow();
         let all_settled_for_current = anim_angle_for_loop.borrow().iter()
             .filter(|a| a.order == order)
-            .all(|a| current_angle_progress(a, now) >= 0.10);
+            .all(|a| current_angle_progress(a, now) >= 1.0);
         if all_settled_for_current {
             let new_order = order + 1;
             *current_order.borrow_mut() = new_order;
@@ -355,7 +381,7 @@ pub fn render_interactive_pie(canvas_id: &str, points: Vec<DataPoint>) -> Result
         true
     })?;
 
-    Ok(PieChartHandle { canvas, running, mouse_closure, click_closure })
+    Ok(PieChartHandle { canvas, running, mouse_closure, click_closure, chart_label })
 }
 
 // ---------- Per-slice animation state (elapsed-time + easing) ----------
@@ -373,6 +399,7 @@ struct SliceAnimAngle {
     target_a: f64,   // angle we're easing toward
     order: usize,      // index of the slice in the original slices vector
     start_time: f64, // performance.now() timestamp when target last changed
+    duration_ms: f64,
 }
 
 
@@ -393,9 +420,10 @@ fn current_radius(anim: &SliceAnimRadius, now_ms: f64) -> f64 {
 
 fn current_angle_progress(anim: &SliceAnimAngle, now_ms: f64)-> f64{
     let elapsed = now_ms - anim.start_time;
-    let t = (elapsed / 500.0).clamp(0.0, 1.0);
+    let t = (elapsed / anim.duration_ms).clamp(0.0, 1.0);
     t
 }
+
 
 fn current_angle(anim: &SliceAnimAngle, now_ms: f64, current_order: &Rc<RefCell<usize>>) -> f64 {
     let order = *current_order.borrow();
@@ -405,8 +433,7 @@ fn current_angle(anim: &SliceAnimAngle, now_ms: f64, current_order: &Rc<RefCell<
         anim.start_a + 0.04
     } else {
         let elapsed = now_ms - anim.start_time;
-        let t = (elapsed / 50.0).clamp(0.0, 1.0);
-        let eased = ease_out_cubic(t);
-        anim.start_a + (anim.target_a - anim.start_a) * eased
+        let t = (elapsed / anim.duration_ms).clamp(0.0, 1.0);
+        anim.start_a + (anim.target_a - anim.start_a) * t
     }
 }

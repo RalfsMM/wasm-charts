@@ -9,7 +9,7 @@
     <canvas id="myCanvas" width="400" height="400" style="border:1px solid #000000;"></canvas>
     <script type="module">
         import init, { render_pie_chart } from './pkg/wasm_charts.js';
-        const data = {
+        const data1 = {
             columns: ["Category", "Value"],
             rows: [
                 ["Apple", 65],
@@ -69,7 +69,7 @@
             ]
         };
         await init();
-        render_pie_chart('myCanvas', data);
+        render_pie_chart('myCanvas', data1);
     </script>
 </body>
 </html>

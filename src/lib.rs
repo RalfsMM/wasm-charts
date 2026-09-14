@@ -7,7 +7,6 @@ mod animation;
 use wasm_bindgen::prelude::*;
 use charts::pie;
 
-use std::cell::RefCell;
 
 #[wasm_bindgen]
 pub fn render_pie_chart(canvas_id: &str, table_json: JsValue) -> Result<(), JsValue> {
@@ -15,7 +14,7 @@ pub fn render_pie_chart(canvas_id: &str, table_json: JsValue) -> Result<(), JsVa
 
     let table = data::table::parse(table_json)?;
     let points = data::extract_points(&table, &pie::PieConfig::default());
-    let handle = pie::render_interactive_pie(canvas_id, points)?;
+    let handle = pie::render_interactive_pie(canvas_id, points, String::from("piechart"))?;
 
     pie::push_chart(handle);
     Ok(())
