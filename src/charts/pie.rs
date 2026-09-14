@@ -79,17 +79,33 @@ impl PieChartHandle {
     }
 }
 
+thread_local! {
+    static CHART_STACK: RefCell<Vec<PieChartHandle>> = RefCell::new(Vec::new());
+}
+
+pub fn push_chart(handle: PieChartHandle) {
+    CHART_STACK.with(|stack| stack.borrow_mut().push(handle));
+}
+
+pub fn stop_all_drilldowns() {
+    CHART_STACK.with(|stack| {
+        while let Some(handle) = stack.borrow_mut().pop() {
+            handle.stop();
+        }
+    });
+}
+
 pub fn compute_pie_slices(mut points: Vec<DataPoint>) -> Result<Vec<PieSlice>, JsValue> {
     if points.iter().any(|p| p.value < 0.0) {
         return Err(JsValue::from_str("negative values are not allowed in pie chart"));
     }
 
-    points.sort_by(|a, b| b.value.partial_cmp(&a.value).unwrap_or(std::cmp::Ordering::Equal));
+    points.sort_by(|a, b| a.value.partial_cmp(&b.value).unwrap_or(std::cmp::Ordering::Equal));
 
     let total: f64 = points.iter().map(|p| p.value).sum();
     let point_count = points.len() as f64;
     let mut angle = -std::f64::consts::PI / 2.0;
-    let mut others: PieSlice = PieSlice { label: "Others".to_string(), angle_start: 0.0, angle_end: std::f64::consts::PI * 3.0 / 2.0, color: "#808080".to_string(), percent: 0.0, sub_points: None };
+    let mut others: PieSlice = PieSlice { label: "Others".to_string(), angle_start: -std::f64::consts::PI / 2.0, angle_end: 0.0, color: "#808080".to_string(), percent: 0.0, sub_points: None };
 
     let mut slices: Vec<PieSlice> = points
         .into_iter()
@@ -111,10 +127,8 @@ pub fn compute_pie_slices(mut points: Vec<DataPoint>) -> Result<Vec<PieSlice>, J
             let start = angle;
             angle += sweep;
 
-            if percent > 0.0 && percent < 3.0 && others.percent + percent < 10.0 {
-                if others.percent == 0.0 {
-                    others.angle_start = start;
-                }
+            if (percent > 0.0) && (percent < 5.0) && (others.percent + percent < 10.0) {
+                others.angle_end= angle;               
                 others.percent += percent;
                 if others.sub_points.is_none() {
                     others.sub_points = Some(vec![]);
@@ -125,8 +139,9 @@ pub fn compute_pie_slices(mut points: Vec<DataPoint>) -> Result<Vec<PieSlice>, J
             Some(PieSlice { label: p.label, angle_start: start, angle_end: angle, color: palette_color(i), percent, sub_points: None })
         })
         .collect();
+
     if others.percent > 0.0 {
-        slices.push(others);
+        slices.insert(0, others);
     }
     Ok(slices)
 }
@@ -286,7 +301,17 @@ pub fn render_interactive_pie(canvas_id: &str, points: Vec<DataPoint>) -> Result
                 if Some(i) == hit {
                     if slice.sub_points.is_some() {
                         *running_for_click.borrow_mut() = false;
-                        let _ = render_interactive_pie(canvas_for_click.id().as_str(), slice.sub_points.clone().unwrap());
+
+                        CHART_STACK.with(|stack| {
+                            if let Some(old_handle) = stack.borrow_mut().pop() {
+                                old_handle.stop();
+                            }
+                        });
+
+                        if let Ok(new_handle) = render_interactive_pie(canvas_for_click.id().as_str(), slice.sub_points.clone().unwrap()) {
+                            CHART_STACK.with(|stack| stack.borrow_mut().push(new_handle));
+                        }
+
                         break;
                     }
                 }
