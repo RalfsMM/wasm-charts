@@ -135,7 +135,7 @@ pub fn compute_pie_slices(mut points: Vec<DataPoint>) -> Result<Vec<PieSlice>, J
 
 // ---------- Drawing (pure function of state) ----------
 
-pub fn draw_pie( canvas: &web_sys::HtmlCanvasElement, slices: &[PieSlice], geo: &PieGeometry, radii: &[f64], angles: Vec<&[f64]>) -> Result<(), JsValue> {
+pub fn draw_pie( canvas: &web_sys::HtmlCanvasElement, slices: &[PieSlice], geo: &PieGeometry, radii: &[f64], angles: &Vec<[f64; 2]>) -> Result<(), JsValue> {
     let context = crate::canvas::get_context(canvas)?;
     context.clear_rect(0.0, 0.0, canvas.width() as f64, canvas.height() as f64);
 
@@ -145,13 +145,9 @@ pub fn draw_pie( canvas: &web_sys::HtmlCanvasElement, slices: &[PieSlice], geo: 
         let start_angle;
         let end_angle;
 
-        if angles.len()>0{
-            start_angle = angles[i][0];
-            end_angle = angles[i][1];
-        }else{
-            start_angle = slice.angle_start;
-            end_angle = slice.angle_end;
-        }
+        start_angle = angles[i][0];
+        end_angle = angles[i][1];
+
 
         context.begin_path();
         context.move_to(geo.cx, geo.cy);
@@ -165,20 +161,22 @@ pub fn draw_pie( canvas: &web_sys::HtmlCanvasElement, slices: &[PieSlice], geo: 
         context.set_fill_style_str(&slice.color);
         context.fill();
 
-        context.set_fill_style_str("black");
-        let mid_angle = (start_angle + end_angle) / 2.0;
-        let label_x;
-        if mid_angle < std::f64::consts::PI / 2.0 || mid_angle > std::f64::consts::PI * 3.0 / 2.0 {
-            context.set_text_align("left");
-            label_x = outer_r + geo.cx + 20.0;
-        } else {
-            context.set_text_align("right");
-            label_x = geo.cx - outer_r - 20.0;
+        if start_angle != end_angle -0.04 {
+            context.set_fill_style_str("black");
+            let mid_angle = (start_angle + end_angle) / 2.0;
+            let label_x;
+            if mid_angle < std::f64::consts::PI / 2.0 || mid_angle > std::f64::consts::PI * 3.0 / 2.0 {
+                context.set_text_align("left");
+                label_x = outer_r + geo.cx + 20.0;
+            } else {
+                context.set_text_align("right");
+                label_x = geo.cx - outer_r - 20.0;
+            }
+            let label_y = geo.cy + outer_r * mid_angle.sin();
+            context
+                .fill_text(&slice.label, label_x, label_y)
+                .map_err(|_| JsValue::from_str("failed to draw text"))?;
         }
-        let label_y = geo.cy + outer_r * mid_angle.sin();
-        context
-            .fill_text(&slice.label, label_x, label_y)
-            .map_err(|_| JsValue::from_str("failed to draw text"))?;
     }
     Ok(())
 }
@@ -223,10 +221,15 @@ pub fn render_interactive_pie(canvas_id: &str, points: Vec<DataPoint>) -> Result
             .map(|_| SliceAnimRadius { start_r: geo.outer_r, target_r: geo.outer_r, start_time: now_ms })
             .collect(),
     ));
+    let angle_anim_state: Rc<RefCell<Vec<SliceAnimAngle>>> = Rc::new(RefCell::new(
+        slices
+            .iter()
+            .enumerate()
+            .map(|(i, slice)| SliceAnimAngle { start_a: slice.angle_start, target_a: slice.angle_end, start_time: now_ms, order: i })
+            .collect(),
+    ));
+    let current_order: Rc<RefCell<usize>> = Rc::new(RefCell::new(0));
 
-    // --- initial draw, nothing hovered yet ---
-    let initial_radii: Vec<f64> = anim_state.borrow().iter().map(|a| a.target_r).collect();
-    new_pie_animation(&canvas, &slices, &geo, &initial_radii)?;
 
     // --- mousemove: updates hover + sets new animation targets ---
     let canvas_for_mouse = canvas.clone();
@@ -282,6 +285,7 @@ pub fn render_interactive_pie(canvas_id: &str, points: Vec<DataPoint>) -> Result
             for ( i, slice) in slices_for_click.iter().enumerate() {
                 if Some(i) == hit {
                     if slice.sub_points.is_some() {
+                        *running_for_click.borrow_mut() = false;
                         let _ = render_interactive_pie(canvas_for_click.id().as_str(), slice.sub_points.clone().unwrap());
                         break;
                     }
@@ -296,6 +300,7 @@ pub fn render_interactive_pie(canvas_id: &str, points: Vec<DataPoint>) -> Result
     let canvas_for_loop = canvas.clone();
     let slices_for_loop = slices.clone();
     let anim_for_loop = anim_state.clone();
+    let anim_angle_for_loop = angle_anim_state.clone();
     let running_for_loop = running.clone();
 
     crate::animation::start_loop(move |_elapsed_ms| {
@@ -304,7 +309,24 @@ pub fn render_interactive_pie(canvas_id: &str, points: Vec<DataPoint>) -> Result
         }
         let now = web_sys::window().unwrap().performance().unwrap().now();
         let radii: Vec<f64> = anim_for_loop.borrow().iter().map(|a| current_radius(a, now)).collect();
-        let _ = draw_pie(&canvas_for_loop, &slices_for_loop, &geo, &radii, vec![]);
+        
+        let angles: Vec<[f64; 2]> = anim_angle_for_loop.borrow().iter().map(|a| [a.start_a, current_angle(a, now, &current_order)]).collect();
+        let order = *current_order.borrow();
+        let all_settled_for_current = anim_angle_for_loop.borrow().iter()
+            .filter(|a| a.order == order)
+            .all(|a| current_angle_progress(a, now) >= 0.10);
+        if all_settled_for_current {
+            let new_order = order + 1;
+            *current_order.borrow_mut() = new_order;
+
+            for anim in anim_angle_for_loop.borrow_mut().iter_mut() {
+                if anim.order == new_order {
+                    anim.start_time = now;
+                }
+            }
+        }
+
+        let _ = draw_pie(&canvas_for_loop, &slices_for_loop, &geo, &radii, &angles);
         true
     })?;
 
@@ -324,10 +346,10 @@ struct SliceAnimRadius {
 struct SliceAnimAngle {
     start_a: f64,    // angle at the moment the target last changed
     target_a: f64,   // angle we're easing toward
+    order: usize,      // index of the slice in the original slices vector
     start_time: f64, // performance.now() timestamp when target last changed
 }
 
-const ANIM_DURATION_MS: f64 = 200.0;
 
 /// Cubic ease-out: fast start, slow finish. `t` is 0.0..1.0 progress.
 fn ease_out_cubic(t: f64) -> f64 {
@@ -339,23 +361,27 @@ fn ease_out_cubic(t: f64) -> f64 {
 /// radius to actually draw this frame.
 fn current_radius(anim: &SliceAnimRadius, now_ms: f64) -> f64 {
     let elapsed = now_ms - anim.start_time;
-    let t = (elapsed / ANIM_DURATION_MS).clamp(0.0, 1.0);
+    let t = (elapsed / 200.0).clamp(0.0, 1.0);
     let eased = ease_out_cubic(t);
     anim.start_r + (anim.target_r - anim.start_r) * eased
 }
 
-fn current_angle(anim: &SliceAnimAngle, now_ms: f64) -> f64 {
-    //let elapsed = now_ms - anim.start_time;
-    //let t = (elapsed / ANIM_DURATION_MS).clamp(0.0, 1.0);
-    //let eased = ease_out_cubic(t);
-    //anim.start_r + (anim.target_r - anim.start_r) * eased
-    0.0
+fn current_angle_progress(anim: &SliceAnimAngle, now_ms: f64)-> f64{
+    let elapsed = now_ms - anim.start_time;
+    let t = (elapsed / 500.0).clamp(0.0, 1.0);
+    t
 }
 
-
-fn new_pie_animation(canvas: &web_sys::HtmlCanvasElement, slices: &[PieSlice], geo: &PieGeometry, radii: &[f64]) -> Result<(), JsValue> {
-
-    draw_pie(&canvas, &slices, &geo, &radii, vec![])?;
-
-    Ok(())
+fn current_angle(anim: &SliceAnimAngle, now_ms: f64, current_order: &Rc<RefCell<usize>>) -> f64 {
+    let order = *current_order.borrow();
+    if anim.order < order {
+        anim.target_a
+    } else if anim.order > order {
+        anim.start_a + 0.04
+    } else {
+        let elapsed = now_ms - anim.start_time;
+        let t = (elapsed / 50.0).clamp(0.0, 1.0);
+        let eased = ease_out_cubic(t);
+        anim.start_a + (anim.target_a - anim.start_a) * eased
+    }
 }
