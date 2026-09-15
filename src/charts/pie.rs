@@ -4,8 +4,6 @@ use wasm_bindgen::JsCast;
 use std::rc::Rc;
 use std::cell::RefCell;
 
-// ---------- Config ----------
-
 pub struct PieConfig {
     pub label_column: usize,
     pub value_column: usize,
@@ -26,8 +24,6 @@ impl Default for PieConfig {
     }
 }
 
-// ---------- Geometry ----------
-
 #[derive(Clone, Copy)]
 pub struct PieGeometry {
     pub cx: f64,
@@ -40,8 +36,6 @@ impl Default for PieGeometry {
         PieGeometry { cx: 200.0, cy: 200.0, outer_r: 100.0, inner_r: 80.0 }
     }
 }
-
-// ---------- Data ----------
 
 pub struct PieSlice {
     pub label: String,
@@ -66,6 +60,8 @@ pub struct PieChartHandle {
     mouse_closure: Closure<dyn FnMut(web_sys::MouseEvent)>,
     click_closure: Closure<dyn FnMut(web_sys::MouseEvent)>,
     chart_label: String,
+    text_w: f64,
+    points: Vec<DataPoint>,
 }
 
 impl PieChartHandle {
@@ -147,22 +143,31 @@ pub fn compute_pie_slices(mut points: Vec<DataPoint>) -> Result<Vec<PieSlice>, J
     Ok(slices)
 }
 
-
-
-// ---------- Drawing (pure function of state) ----------
-
-pub fn draw_pie( canvas: &web_sys::HtmlCanvasElement, slices: &[PieSlice], geo: &PieGeometry, radii: &[f64], angles: &Vec<[f64; 2]>) -> Result<(), JsValue> {
+pub fn draw_pie( canvas: &web_sys::HtmlCanvasElement, slices: &[PieSlice], geo: &PieGeometry, radii: &[f64], angles: &Vec<[f64; 2]>, title_hover: &Option<usize>) -> Result<(), JsValue> {
     let context = crate::canvas::get_context(canvas)?;
     context.clear_rect(0.0, 0.0, canvas.width() as f64, canvas.height() as f64);
 
     context.set_fill_style_str("Black");
-    context.set_text_align("left");
+    context.set_text_align("right");
     CHART_STACK.with(|stack| {
         let charts = stack.borrow();
+        let mut indent= 0.0;
         for (i, chart) in charts.iter().enumerate() {
-            let label = format!("{}/", chart.chart_label);
+            if *title_hover == Some(i) {
+                context.set_fill_style_str("Blue");
+            } else {
+                context.set_fill_style_str("black");
+            }
+            let label;
+            if indent>0.0{
+                label = format!("/{}", chart.chart_label);
+                indent +=3.0;
+            }else{
+                label = chart.chart_label.clone();
+            }
+            indent += chart.text_w;
             context
-                .fill_text(&label, 20.0, 30.0 + i as f64 * 12.0)
+                .fill_text(&label, 20.0 + indent, 30.0)
                 .map_err(|_| JsValue::from_str("failed to draw chart label"))?;
         }
         Ok::<(), JsValue>(())
@@ -211,9 +216,7 @@ pub fn draw_pie( canvas: &web_sys::HtmlCanvasElement, slices: &[PieSlice], geo: 
     Ok(())
 }
 
-// ---------- Hit-testing ----------
-
-fn hit_test(slices: &[PieSlice], geo: &PieGeometry, mx: f64, my: f64) -> Option<usize> {
+fn hit_test_slices(slices: &[PieSlice], geo: &PieGeometry, mx: f64, my: f64) -> Option<usize> {
     let dx = mx - geo.cx;
     let dy = my - geo.cy;
     let dist = (dx * dx + dy * dy).sqrt();
@@ -224,16 +227,31 @@ fn hit_test(slices: &[PieSlice], geo: &PieGeometry, mx: f64, my: f64) -> Option<
 
     let mut angle = dy.atan2(dx);
     if angle < -std::f64::consts::PI / 2.0 {
-        angle += std::f64::consts::TAU; // wrap into the same -PI/2..3*PI/2 frame the slices use
+        angle += std::f64::consts::TAU;
     }
 
     slices.iter().position(|s| angle >= s.angle_start && angle < s.angle_end)
 }
 
-// ---------- Wiring: mouse events + animation loop ----------
+fn hit_test_titles(mx: f64, my: f64) -> Option<usize> {
+    if my<20.0||my>30.0||mx<20.0{
+        return None;
+    }
+    CHART_STACK.with(|stack|{
+        let charts=stack.borrow();
+        let mut indent=0.0;
+        for (i,chart) in charts.iter().enumerate() {
+            indent += chart.text_w+3.0;
+            if mx< 20.0 + indent{
+                return Some(i);
+            }
+        }
+        None
+    })
+}
 
 pub fn render_interactive_pie(canvas_id: &str, points: Vec<DataPoint>, chart_label: String) -> Result<PieChartHandle, JsValue> {
-    let slices = compute_pie_slices(points)?;
+    let slices = compute_pie_slices(points.clone())?;
     let canvas = crate::canvas::get_canvas(canvas_id)?;
     let geo = PieGeometry::default();
     let running = Rc::new(RefCell::new(true));
@@ -244,7 +262,8 @@ pub fn render_interactive_pie(canvas_id: &str, points: Vec<DataPoint>, chart_lab
         .ok_or_else(|| JsValue::from_str("no performance"))?;
 
     let slices = Rc::new(slices);
-    let hover: Rc<RefCell<Option<usize>>> = Rc::new(RefCell::new(None));
+    let hover_slice: Rc<RefCell<Option<usize>>> = Rc::new(RefCell::new(None));
+    let hover_title: Rc<RefCell<Option<usize>>> = Rc::new(RefCell::new(None));
     let anim_state: Rc<RefCell<Vec<SliceAnimRadius>>> = Rc::new(RefCell::new(
         slices
             .iter()
@@ -271,11 +290,10 @@ pub fn render_interactive_pie(canvas_id: &str, points: Vec<DataPoint>, chart_lab
     ));
     let current_order: Rc<RefCell<usize>> = Rc::new(RefCell::new(0));
 
-
-    // --- mousemove: updates hover + sets new animation targets ---
     let canvas_for_mouse = canvas.clone();
     let slices_for_mouse = slices.clone();
-    let hover_for_mouse = hover.clone();
+    let hover_slice_for_mouse = hover_slice.clone();
+    let hover_title_for_mouse = hover_title.clone();
     let anim_for_mouse = anim_state.clone();
     let geo_for_mouse = geo;
 
@@ -284,16 +302,16 @@ pub fn render_interactive_pie(canvas_id: &str, points: Vec<DataPoint>, chart_lab
         let mx = event.client_x() as f64 - rect.left();
         let my = event.client_y() as f64 - rect.top();
 
-        let hit = hit_test(&slices_for_mouse, &geo_for_mouse, mx, my);
-        let mut hover_ref = hover_for_mouse.borrow_mut();
+        let slice_hit = hit_test_slices(&slices_for_mouse, &geo_for_mouse, mx, my);
+        let mut slice_hover_ref = hover_slice_for_mouse.borrow_mut();
 
-        if *hover_ref != hit {
-            *hover_ref = hit;
+        if *slice_hover_ref != slice_hit {
+            *slice_hover_ref = slice_hit;
 
             let now = web_sys::window().unwrap().performance().unwrap().now();
             let mut anims = anim_for_mouse.borrow_mut();
             for (i, anim) in anims.iter_mut().enumerate() {
-                let new_target = if hit == Some(i) { geo_for_mouse.outer_r + 10.0 } else { geo_for_mouse.outer_r };
+                let new_target = if slice_hit == Some(i) { geo_for_mouse.outer_r + 10.0 } else { geo_for_mouse.outer_r };
 
                 let changed = anim.target_r != new_target;
 
@@ -305,11 +323,14 @@ pub fn render_interactive_pie(canvas_id: &str, points: Vec<DataPoint>, chart_lab
                 }
             }
         }
+        let title_hit = hit_test_titles(mx, my);
+        let mut title_hover_ref = hover_title_for_mouse.borrow_mut();
+        if *title_hover_ref != title_hit {
+            *title_hover_ref = title_hit;
+        }
     });
 
     canvas.add_event_listener_with_callback("mousemove", mouse_closure.as_ref().unchecked_ref())?;
-
-    // --- click listener
 
     let canvas_for_click = canvas.clone();
     let slices_for_click = slices.clone();
@@ -321,10 +342,10 @@ pub fn render_interactive_pie(canvas_id: &str, points: Vec<DataPoint>, chart_lab
         let mx = event.client_x() as f64 - rect.left();
         let my = event.client_y() as f64 - rect.top();
 
-        let hit = hit_test(&slices_for_click, &geo_for_click, mx, my);
-        if hit.is_some() {
+        let slice_hit = hit_test_slices(&slices_for_click, &geo_for_click, mx, my);
+        if slice_hit.is_some() {
             for ( i, slice) in slices_for_click.iter().enumerate() {
-                if Some(i) == hit {
+                if Some(i) == slice_hit {
                     if slice.sub_points.is_some() {
                         *running_for_click.borrow_mut() = false;
 
@@ -343,16 +364,36 @@ pub fn render_interactive_pie(canvas_id: &str, points: Vec<DataPoint>, chart_lab
                 }
             }
         }
+
+        let title_hit = hit_test_titles(mx, my);
+        if let Some(i) = title_hit {
+            CHART_STACK.with(|stack| {
+                let mut charts = stack.borrow_mut(); // single mutable borrow, used for everything below
+                *running_for_click.borrow_mut() = false;
+                let points = charts[i].points.clone();
+                let label = charts[i].chart_label.clone();
+                while charts.len() > i {
+                    if let Some(old_chart) = charts.pop() {
+                        old_chart.stop();
+                    }
+                }
+                drop(charts);
+                if let Ok(new_handle) = render_interactive_pie(canvas_for_click.id().as_str(), points, label) {
+                    CHART_STACK.with(|stack| stack.borrow_mut().push(new_handle));
+                }
+            });
+        }
+
     });
 
     canvas.add_event_listener_with_callback("click", click_closure.as_ref().unchecked_ref())?;
 
-    // --- animation loop: redraws every frame using current eased radii ---
     let canvas_for_loop = canvas.clone();
     let slices_for_loop = slices.clone();
     let anim_for_loop = anim_state.clone();
     let anim_angle_for_loop = angle_anim_state.clone();
     let running_for_loop = running.clone();
+    let hover_title_for_loop = hover_title.clone();
 
     crate::animation::start_loop(move |_elapsed_ms| {
         if !*running_for_loop.borrow() {
@@ -377,40 +418,39 @@ pub fn render_interactive_pie(canvas_id: &str, points: Vec<DataPoint>, chart_lab
             }
         }
 
-        let _ = draw_pie(&canvas_for_loop, &slices_for_loop, &geo, &radii, &angles);
+        let hover_title_value = *hover_title_for_loop.borrow();
+        let _ = draw_pie(&canvas_for_loop, &slices_for_loop, &geo, &radii, &angles, &hover_title_value);
         true
     })?;
 
-    Ok(PieChartHandle { canvas, running, mouse_closure, click_closure, chart_label })
-}
+    let context = crate::canvas::get_context(&canvas)?;
+    let textmetrics = context.measure_text(chart_label.as_str());
+    let text_w =textmetrics.unwrap().width();
 
-// ---------- Per-slice animation state (elapsed-time + easing) ----------
+    Ok(PieChartHandle { canvas, running, mouse_closure, click_closure, chart_label, text_w, points })
+}
 
 #[derive(Clone, Copy)]
 struct SliceAnimRadius {
-    start_r: f64,    // radius at the moment the target last changed
-    target_r: f64,   // radius we're easing toward
-    start_time: f64, // performance.now() timestamp when target last changed
+    start_r: f64,
+    target_r: f64,
+    start_time: f64,
 }
 
 #[derive(Clone, Copy)]
 struct SliceAnimAngle {
-    start_a: f64,    // angle at the moment the target last changed
-    target_a: f64,   // angle we're easing toward
-    order: usize,      // index of the slice in the original slices vector
-    start_time: f64, // performance.now() timestamp when target last changed
+    start_a: f64,
+    target_a: f64,
+    order: usize,
+    start_time: f64,
     duration_ms: f64,
 }
 
-
-/// Cubic ease-out: fast start, slow finish. `t` is 0.0..1.0 progress.
 fn ease_out_cubic(t: f64) -> f64 {
     let t = t.clamp(0.0, 1.0);
     1.0 - (1.0 - t).powi(3)
 }
 
-/// Given a slice's animation state and the current time, compute the
-/// radius to actually draw this frame.
 fn current_radius(anim: &SliceAnimRadius, now_ms: f64) -> f64 {
     let elapsed = now_ms - anim.start_time;
     let t = (elapsed / 200.0).clamp(0.0, 1.0);
@@ -423,7 +463,6 @@ fn current_angle_progress(anim: &SliceAnimAngle, now_ms: f64)-> f64{
     let t = (elapsed / anim.duration_ms).clamp(0.0, 1.0);
     t
 }
-
 
 fn current_angle(anim: &SliceAnimAngle, now_ms: f64, current_order: &Rc<RefCell<usize>>) -> f64 {
     let order = *current_order.borrow();
