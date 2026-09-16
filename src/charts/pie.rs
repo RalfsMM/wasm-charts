@@ -3,11 +3,25 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use std::rc::Rc;
 use std::cell::RefCell;
+//todo: izdarit lai starpiba starp radiusiem butu no configa, jo paslaik drawpie vnk -10 outer radiusu. Ari lai hovera animesanas uz aru mainas no configa
+//      ielikt congfigu ka parametru render funkcijaa, nevis tikai izmantot defaultu
 
-//Konfiguracija Piechartam
+//Konfiguracija Piechartam, geo
+#[derive(Clone, Copy)]
 pub struct PieConfig {
     pub label_column: usize,
     pub value_column: usize,
+    pub cx: f64,
+    pub cy: f64,
+    pub outer_r: f64,
+    pub inner_r: f64,
+    pub default_font_size: f64,
+    pub default_font: &'static str,
+    pub middle_font_size: f64,
+    pub middle_font: &'static str,
+    pub text_color: &'static str,
+    pub hover_title_color: &'static str,
+
 }
 //Traits taa lai parsingaa var izmantot visu chartu configus
 impl Points for PieConfig {
@@ -21,21 +35,8 @@ impl Points for PieConfig {
 //Noklusejuma vertibas, pirma kollona key, otra value
 impl Default for PieConfig {
     fn default() -> Self {
-        PieConfig { label_column: 0, value_column: 1 }
-    }
-}
-
-//Pie centra koordinatas, un radiusi. Ar default vertibam
-#[derive(Clone, Copy)]
-pub struct PieGeometry {
-    pub cx: f64,
-    pub cy: f64,
-    pub outer_r: f64,
-    pub inner_r: f64,
-}
-impl Default for PieGeometry {
-    fn default() -> Self {
-        PieGeometry { cx: 200.0, cy: 200.0, outer_r: 100.0, inner_r: 80.0 }
+        //PieConfig{ label_column: 0, value_column: 1, cx: 400.0, cy: 400.0, outer_r: 200.0, inner_r: 160.0, default_font_size: 24.0, default_font: "24px sans-serif", middle_font_size: 108.0, middle_font: "108px sans-serif", text_color: "black", hover_title_color: "blue" }
+        PieConfig { label_column: 0, value_column: 1, cx: 200.0, cy: 200.0, outer_r: 100.0, inner_r: 80.0, default_font_size: 12.0, default_font: "12px sans-serif", middle_font_size: 54.0, middle_font: "54px sans-serif", text_color: "black", hover_title_color: "blue" }
     }
 }
 
@@ -156,32 +157,39 @@ pub fn compute_pie_slices(mut points: Vec<DataPoint>, fraction: f64) -> Result<V
 }
 
 //uzzime pie atbilstosi lenkiem, radiusiem utt. So izmanto independently no pie stavokla
-pub fn draw_pie( canvas: &web_sys::HtmlCanvasElement, slices: &[PieSlice], geo: &PieGeometry, radii: &[f64], angles: &Vec<[f64; 2]>, title_hover: &Option<usize>, slice_hover: &Option<usize>) -> Result<(), JsValue> {
+pub fn draw_pie( canvas: &web_sys::HtmlCanvasElement, slices: &[PieSlice], geo: &PieConfig, radii: &[f64], angles: &Vec<[f64; 2]>, title_hover: &Option<usize>, slice_hover: &Option<usize>) -> Result<(), JsValue> {
     let context = crate::canvas::get_context(canvas)?;
     context.clear_rect(0.0, 0.0, canvas.width() as f64, canvas.height() as f64);
+    
+    let default_size = geo.default_font_size;
+    let default_font=geo.default_font;
+    let middle_size = geo.middle_font_size;
+    let middle_font =geo.middle_font;
+    let text_color =geo.text_color;
+    let hover_title_color = geo.hover_title_color;
 
-    context.set_font("10px sans-serif");
-    context.set_fill_style_str("Black");
+    context.set_font(default_font);
+    context.set_fill_style_str(text_color);
     context.set_text_align("right");
     CHART_STACK.with(|stack| {
         let charts = stack.borrow();
         let mut indent= 0.0;
         for (i, chart) in charts.iter().enumerate() {
             if *title_hover == Some(i) {
-                context.set_fill_style_str("Blue");
+                context.set_fill_style_str(hover_title_color);
             } else {
-                context.set_fill_style_str("black");
+                context.set_fill_style_str(text_color);
             }
             let label;
             if indent>0.0{
                 label = format!("/{}", chart.chart_label);
-                indent +=3.0;
+                indent +=default_size/3.0;
             }else{
                 label = chart.chart_label.clone();
             }
             indent += chart.text_w;
             context
-                .fill_text(&label, 20.0 + indent, 30.0)
+                .fill_text(&label, geo.cx - 1.6*geo.outer_r + indent, geo.cy - 1.6*geo.outer_r)
                 .map_err(|_| JsValue::from_str("failed to draw chart label"))?;
         }
         Ok::<(), JsValue>(())
@@ -210,17 +218,17 @@ pub fn draw_pie( canvas: &web_sys::HtmlCanvasElement, slices: &[PieSlice], geo: 
         context.fill();
 
         if start_angle != end_angle -0.04 {
-            context.set_fill_style_str("black");
-            context.set_font("10px sans-serif");
+            context.set_fill_style_str(text_color);
+            context.set_font(default_font);
 
             let mid_angle = (start_angle + end_angle) / 2.0;
             let label_x;
             if mid_angle < std::f64::consts::PI / 2.0 || mid_angle > std::f64::consts::PI * 3.0 / 2.0 {
                 context.set_text_align("left");
-                label_x = outer_r + geo.cx + 20.0;
+                label_x = outer_r + geo.cx + geo.outer_r/5.0;
             } else {
                 context.set_text_align("right");
-                label_x = geo.cx - outer_r - 20.0;
+                label_x = geo.cx - outer_r - geo.outer_r/5.0;
             }
             let label_y = geo.cy + outer_r * mid_angle.sin();
             context
@@ -228,27 +236,27 @@ pub fn draw_pie( canvas: &web_sys::HtmlCanvasElement, slices: &[PieSlice], geo: 
                 .map_err(|_| JsValue::from_str("failed to draw text"))?;
         }
         if *slice_hover == Some(i) {
-            context.set_font("54px sans-serif");
+            context.set_font(middle_font);
             context.set_text_align("center");
-            context.set_fill_style_str("black");
+            context.set_fill_style_str(text_color);
             let percent = format!("{:.1}%", slice.percent);
             context
-                .fill_text(&percent, geo.cx, geo.cy+ 18.0)
+                .fill_text(&percent, geo.cx, geo.cy+ middle_size/3.0)
                 .map_err(|_| JsValue::from_str("failed to draw text"))?;
         }
     }
     //context.begin_path();
-    //context.move_to(0.0,200.0);
-    //context.line_to(400.0,200.0);
-    //context.move_to(200.0,0.0);
-    //context.line_to(200.0,400.0);
+    //context.move_to(0.0,(canvas.height() as f64)/2);
+    //context.line_to(canvas.width() as f64,(canvas.height() as f64)/2);
+    //context.move_to((canvas.width() as f64)/2,0.0);
+    //context.line_to((canvas.width() as f64)/2, canvas.height() as f64);
     //context.stroke();
     
     Ok(())
 }
 
 //parbauda vai padotas koordinatas ir uz kada slice, un atgriez uz kura ja ir.
-fn hit_test_slices(slices: &[PieSlice], geo: &PieGeometry, mx: f64, my: f64) -> Option<usize> {
+fn hit_test_slices(slices: &[PieSlice], geo: &PieConfig, mx: f64, my: f64) -> Option<usize> {
     let dx = mx - geo.cx;
     let dy = my - geo.cy;
     let dist = (dx * dx + dy * dy).sqrt();
@@ -266,16 +274,16 @@ fn hit_test_slices(slices: &[PieSlice], geo: &PieGeometry, mx: f64, my: f64) -> 
 }
 
 //parbauda vai padotas koordinatas ir uz kada title, un atgriez uz kura ja ir
-fn hit_test_titles(mx: f64, my: f64) -> Option<usize> {
-    if my<20.0||my>30.0||mx<20.0{
+fn hit_test_titles(mx: f64, my: f64, geo: &PieConfig) -> Option<usize> {
+    if my<geo.cy - 1.6*geo.outer_r - geo.default_font_size||my>geo.cy - 1.6*geo.outer_r||mx<geo.cx - 1.6*geo.outer_r{
         return None;
     }
     CHART_STACK.with(|stack|{
         let charts=stack.borrow();
         let mut indent=0.0;
         for (i,chart) in charts.iter().enumerate() {
-            indent += chart.text_w+3.0;
-            if mx< 20.0 + indent{
+            indent += chart.text_w+ geo.default_font_size/3.0;
+            if mx< geo.cx - 1.6*geo.outer_r + indent{
                 return Some(i);
             }
         }
@@ -287,7 +295,7 @@ fn hit_test_titles(mx: f64, my: f64) -> Option<usize> {
 pub fn render_interactive_pie(canvas_id: &str, points: Vec<DataPoint>, chart_label: String, fraction: f64) -> Result<PieChartHandle, JsValue> {
     let slices = compute_pie_slices(points.clone(), fraction)?;
     let canvas = crate::canvas::get_canvas(canvas_id)?;
-    let geo = PieGeometry::default();
+    let geo = PieConfig::default();
     let running = Rc::new(RefCell::new(true));
 
     let now_ms = web_sys::window()
@@ -361,7 +369,7 @@ pub fn render_interactive_pie(canvas_id: &str, points: Vec<DataPoint>, chart_lab
         }
 
         //parbauda cai hover uz title
-        let title_hit = hit_test_titles(mx, my);
+        let title_hit = hit_test_titles(mx, my, &geo);
         let mut title_hover_ref = hover_title_for_mouse.borrow_mut();
         if *title_hover_ref != title_hit {
             *title_hover_ref = title_hit;
@@ -405,7 +413,7 @@ pub fn render_interactive_pie(canvas_id: &str, points: Vec<DataPoint>, chart_lab
         }
 
         //parbauda vai click uz title
-        let title_hit = hit_test_titles(mx, my);
+        let title_hit = hit_test_titles(mx, my, &geo);
         if let Some(i) = title_hit {
             CHART_STACK.with(|stack| {
                 let mut charts = stack.borrow_mut(); // single mutable borrow, used for everything below
