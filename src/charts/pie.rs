@@ -4,7 +4,6 @@ use wasm_bindgen::JsCast;
 use std::rc::Rc;
 use std::cell::RefCell;
 //todo: izdarit lai starpiba starp radiusiem butu no configa, jo paslaik drawpie vnk -10 outer radiusu. Ari lai hovera animesanas uz aru mainas no configa
-//      ielikt congfigu ka parametru render funkcijaa, nevis tikai izmantot defaultu
 
 //Konfiguracija Piechartam, geo
 #[derive(Clone, Copy)]
@@ -14,7 +13,7 @@ pub struct PieConfig {
     pub cx: f64,
     pub cy: f64,
     pub outer_r: f64,
-    pub inner_r: f64,
+    pub inner_r_diff: f64,
     pub default_font_size: f64,
     pub default_font: &'static str,
     pub middle_font_size: f64,
@@ -35,8 +34,7 @@ impl Points for PieConfig {
 //Noklusejuma vertibas, pirma kollona key, otra value
 impl Default for PieConfig {
     fn default() -> Self {
-        //PieConfig{ label_column: 0, value_column: 1, cx: 400.0, cy: 400.0, outer_r: 200.0, inner_r: 160.0, default_font_size: 24.0, default_font: "24px sans-serif", middle_font_size: 108.0, middle_font: "108px sans-serif", text_color: "black", hover_title_color: "blue" }
-        PieConfig { label_column: 0, value_column: 1, cx: 200.0, cy: 200.0, outer_r: 100.0, inner_r: 80.0, default_font_size: 12.0, default_font: "12px sans-serif", middle_font_size: 54.0, middle_font: "54px sans-serif", text_color: "black", hover_title_color: "blue" }
+        PieConfig { label_column: 0, value_column: 1, cx: 200.0, cy: 200.0, outer_r: 100.0, inner_r_diff: 20.0, default_font_size: 10.0, default_font: "10px sans-serif", middle_font_size: 54.0, middle_font: "54px sans-serif", text_color: "black", hover_title_color: "blue" }
     }
 }
 
@@ -198,7 +196,7 @@ pub fn draw_pie( canvas: &web_sys::HtmlCanvasElement, slices: &[PieSlice], geo: 
 
     for (i, slice) in slices.iter().enumerate() {
         let outer_r = radii[i];
-        let inner_r = outer_r -20.0;
+        let inner_r = outer_r -geo.inner_r_diff;
         let start_angle;
         let end_angle;
 
@@ -261,7 +259,7 @@ fn hit_test_slices(slices: &[PieSlice], geo: &PieConfig, mx: f64, my: f64) -> Op
     let dy = my - geo.cy;
     let dist = (dx * dx + dy * dy).sqrt();
 
-    if dist < geo.inner_r || dist > geo.outer_r + 10.0 {
+    if dist < (geo.outer_r - geo.inner_r_diff)|| dist > geo.outer_r + geo.inner_r_diff/2.0 {
         return None;
     }
 
@@ -292,10 +290,11 @@ fn hit_test_titles(mx: f64, my: f64, geo: &PieConfig) -> Option<usize> {
 }
 
 //uzzime pie ar animacijam un palaiz mousemove un mousedown listeners, un handlo izmainas
-pub fn render_interactive_pie(canvas_id: &str, points: Vec<DataPoint>, chart_label: String, fraction: f64) -> Result<PieChartHandle, JsValue> {
+pub fn render_interactive_pie(canvas_id: &str, points: Vec<DataPoint>, chart_label: String, fraction: f64, config: PieConfig) -> Result<PieChartHandle, JsValue> {
     let slices = compute_pie_slices(points.clone(), fraction)?;
     let canvas = crate::canvas::get_canvas(canvas_id)?;
-    let geo = PieConfig::default();
+    //let geo = PieConfig::default();
+    let geo =config;
     let running = Rc::new(RefCell::new(true));
 
     let now_ms = web_sys::window()
@@ -355,7 +354,7 @@ pub fn render_interactive_pie(canvas_id: &str, points: Vec<DataPoint>, chart_lab
             let now = web_sys::window().unwrap().performance().unwrap().now();
             let mut anims = anim_for_mouse.borrow_mut();
             for (i, anim) in anims.iter_mut().enumerate() {
-                let new_target = if slice_hit == Some(i) { geo_for_mouse.outer_r + 10.0 } else { geo_for_mouse.outer_r };
+                let new_target = if slice_hit == Some(i) { geo_for_mouse.outer_r + geo_for_mouse.inner_r_diff/2.0 } else { geo_for_mouse.outer_r };
 
                 let changed = anim.target_r != new_target;
 
@@ -368,8 +367,8 @@ pub fn render_interactive_pie(canvas_id: &str, points: Vec<DataPoint>, chart_lab
             }
         }
 
-        //parbauda cai hover uz title
-        let title_hit = hit_test_titles(mx, my, &geo);
+        //parbauda vai hover uz title
+        let title_hit = hit_test_titles(mx, my, &geo_for_mouse);
         let mut title_hover_ref = hover_title_for_mouse.borrow_mut();
         if *title_hover_ref != title_hit {
             *title_hover_ref = title_hit;
@@ -402,7 +401,7 @@ pub fn render_interactive_pie(canvas_id: &str, points: Vec<DataPoint>, chart_lab
                             }
                         });
 
-                        if let Ok(new_handle) = render_interactive_pie(canvas_for_click.id().as_str(), slice.sub_points.clone().unwrap(), slice.label.clone(), slice.percent) {
+                        if let Ok(new_handle) = render_interactive_pie(canvas_for_click.id().as_str(), slice.sub_points.clone().unwrap(), slice.label.clone(), slice.percent, geo_for_click) {
                             CHART_STACK.with(|stack| stack.borrow_mut().push(new_handle));
                         }
 
@@ -413,7 +412,7 @@ pub fn render_interactive_pie(canvas_id: &str, points: Vec<DataPoint>, chart_lab
         }
 
         //parbauda vai click uz title
-        let title_hit = hit_test_titles(mx, my, &geo);
+        let title_hit = hit_test_titles(mx, my, &geo_for_click);
         if let Some(i) = title_hit {
             CHART_STACK.with(|stack| {
                 let mut charts = stack.borrow_mut(); // single mutable borrow, used for everything below
@@ -428,7 +427,7 @@ pub fn render_interactive_pie(canvas_id: &str, points: Vec<DataPoint>, chart_lab
                     }
                 }
                 drop(charts);
-                if let Ok(new_handle) = render_interactive_pie(canvas_for_click.id().as_str(), points, label, fract) {
+                if let Ok(new_handle) = render_interactive_pie(canvas_for_click.id().as_str(), points, label, fract, geo_for_click) {
                     CHART_STACK.with(|stack| stack.borrow_mut().push(new_handle));
                 }
             });
