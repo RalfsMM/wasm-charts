@@ -3,7 +3,6 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use std::rc::Rc;
 use std::cell::RefCell;
-//todo: izdarit lai starpiba starp radiusiem butu no configa, jo paslaik drawpie vnk -10 outer radiusu. Ari lai hovera animesanas uz aru mainas no configa
 
 //Konfiguracija Piechartam, geo
 #[derive(Clone, Copy)]
