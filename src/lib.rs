@@ -6,6 +6,7 @@ mod animation;
 
 use wasm_bindgen::prelude::*;
 use charts::pie;
+use charts::bar;
 
 
 #[wasm_bindgen]
@@ -19,5 +20,16 @@ pub fn render_pie_chart(canvas_id: &str, table_json: JsValue) -> Result<(), JsVa
     let handle = pie::render_interactive_pie(canvas_id, points, String::from("piechart"), 100.0, config)?;
 
     pie::push_chart(handle);
+    Ok(())
+}
+
+#[wasm_bindgen]
+pub fn render_bar_chart(canvas_id: &str, table_json: JsValue) -> Result<(), JsValue> {
+
+    let table = data::table::parse(table_json)?;
+    let config = bar::BarConfig::default();
+    let points = data::extract_points(&table, &config);
+    bar::render_bar_chart(canvas_id, points, String::from("piechart"), config)?;
+
     Ok(())
 }

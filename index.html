@@ -8,7 +8,9 @@
 <body>
     <canvas id="myCanvas" width="800" height="800" style="border:1px solid #000000;"></canvas>
     <script type="module">
-        import init, { render_pie_chart } from './pkg/wasm_charts.js';
+        //import init, { render_pie_chart } from './pkg/wasm_charts.js';
+        import init, { render_bar_chart } from './pkg/wasm_charts.js';
+
         const data1 = {
             columns: ["Category", "Value"],
             rows: [
@@ -17,10 +19,10 @@
                 ["Cherry", 14],
                 ["Date", 9],
                 ["Elderberry", 6],
-                ["Fig", 7],
+                ["Fig", -7],
                 ["Grape", 86],
                 ["Hamburger", 56],
-                ["Icecream", 22],
+                ["Icecream", -22],
                 ["Jelly", 9],
                 ["Kiwi", 89],
                 ["Lemon", 30],
@@ -69,7 +71,8 @@
             ]
         };
         await init();
-        render_pie_chart('myCanvas', data1);
+        render_bar_chart('myCanvas', data1)
+        //render_pie_chart('myCanvas', data1);
     </script>
 </body>
 </html>
