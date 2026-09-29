@@ -4,7 +4,7 @@ use serde_json::Value;
 
 #[derive(Deserialize, Debug)]
 pub struct Table {
-    //pub columns: Vec<String>,
+    pub columns: Vec<String>,
     pub rows: Vec<Vec<Value>>,
 }
 
