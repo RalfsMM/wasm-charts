@@ -357,9 +357,18 @@ pub fn draw_bar_chart( canvas: &web_sys::HtmlCanvasElement, bars: &[Bar], geo: &
                 context.set_fill_style_str("red");
             }
             context.fill_rect(bar.start_x, bar.start_y, bar.width, -lenghts[i]);
+            // let value=format!("{}",bar.value);
+            // if lenghts[i]>0.0{
+            //     context.set_text_baseline("bottom");
+            // }else{
+            //     context.set_text_baseline("top");
+            // }
+            // context.set_text_align("middle");
+            // context.fill_text(&value, bar.start_x+bar.width/1.2, bar.start_y -lenghts[i])?;
             context.save();
             context.translate(bar.start_x+(bar.width/2.0), geo.start_y + geo.height + 0.3*geo.default_font_size)?;            // move origin to where the text should be
             context.rotate(-std::f64::consts::PI / 2.0)?;
+            context.set_text_align("right");
             context.set_text_baseline("middle");
             context.fill_text(&bar.label, 0.0, 0.0)?;
             context.restore();
@@ -422,7 +431,7 @@ pub fn draw_bar_chart( canvas: &web_sys::HtmlCanvasElement, bars: &[Bar], geo: &
     }           
     Ok(())
 }
-//todo fixot hit test for horizontala
+
 pub fn hit_test_bar(bars: &[Bar], mx:f64, my: f64, geo: &BarConfig)->Option<usize>{
     if geo.vert{
         for (i, bar) in bars.iter().enumerate(){
