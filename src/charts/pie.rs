@@ -143,7 +143,8 @@ pub fn compute_pie_slices(mut points: Vec<DataPoint>, fraction: f64) -> Result<V
                 others.sub_points.as_mut().unwrap().push(p);
                 return None;
             }
-            Some(PieSlice { label: p.label, angle_start: start, angle_end: angle, color: palette_color(i), percent, sub_points: None })
+            let subpoints=Some(vec![DataPoint{label: "A".to_string(), value: 1.0}, DataPoint{label: "B".to_string(), value: 2.0}, DataPoint{label: "C".to_string()  , value: 3.0}]);
+            Some(PieSlice { label: p.label, angle_start: start, angle_end: angle, color: palette_color(i), percent, sub_points: subpoints })
         })
         .collect();
 
@@ -475,8 +476,8 @@ pub fn render_interactive_pie(canvas_id: &str, points: Vec<DataPoint>, chart_lab
 
     //izmera cik gars ir title
     let context = crate::canvas::get_context(&canvas)?;
-    let textmetrics = context.measure_text(chart_label.as_str());
-    let text_w =textmetrics.unwrap().width();//chatins piedavaja map_err seit, es nez
+    context.set_font(config.default_font);
+    let text_w = context.measure_text(chart_label.as_str())?.width();
 
     Ok(PieChartHandle { canvas, running, mouse_closure, click_closure, chart_label, text_w, points, fraction })
 }

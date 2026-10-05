@@ -33,7 +33,8 @@ pub fn render_bar_chart(canvas_id: &str, table_json: JsValue) -> Result<(), JsVa
     let label_y=table.columns[config.value_column].clone();
 
     let points = data::extract_points(&table, &config);
-    bar::render_bar_chart(canvas_id, points, String::from("piechart"), config, label_x, label_y)?;
+    let handle = bar::render_bar_chart(canvas_id, points, String::from("barchart"), config, label_x, label_y)?;
 
+    bar::push_chart(handle);
     Ok(())
 }
