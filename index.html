@@ -6,37 +6,101 @@
     <title>WASM Charts</title>
 </head>
 <body>
-    <canvas id="myCanvas" width="800" height="800" style="border:1px solid #000000;"></canvas>
+    <canvas id="myCanvas1" width="600" height="450" style="border:1px solid #000000;"></canvas>
+    <canvas id="myCanvas2" width="600" height="400" style="border:1px solid #000000;"></canvas>
+
     <script type="module">
-        //import init, { render_pie_chart } from './pkg/wasm_charts.js';
-        import init, { render_bar_chart } from './pkg/wasm_charts.js';
+        import init, { render_pie_chart, render_bar_chart } from './pkg/wasm_charts.js';
+
+        const barconfig = {
+            label_column: 0,
+            value_column: [1, 2, 3],
+            vert: true,
+            sort_asc: false,
+            sort_desc: false,
+            sub_color: true,
+            sub_stack: true,
+            start_x:50.0,
+            start_y:50.0,
+            height: 300.0,
+            width: 400.0, 
+            font_size: 10.0,
+            font: "10px sans-serif",
+            text_color: "black",
+            step_fraction: 1.0
+        }
+
+        const pieconfig = {
+            label_column: 0,
+            value_column: [1, 2, 3],
+            vert: true,
+            sort_asc: false,
+            sort_desc: false,
+            sub_color: true,
+            sub_stack: true,
+            start_x:50.0,
+            start_y:50.0,
+            height: 300.0,
+            width: 400.0, 
+            font_size: 10.0,
+            font: "10px sans-serif",
+            text_color: "black",
+            step_fraction: 1.0
+        }
 
         const data1 = {
-            columns: ["Category", "Value"],
+            columns: ["Key", "Value1", "Value2", "Value3"],
             rows: [
-                ["Apple", 65],
-                ["Banana", 53],
-                ["Cherry", 14],
-                ["Date", 9],
-                ["Elderberry", 6],
-                ["Fig", -7],
-                ["Grape", 86],
-                ["Hamburger", 56],
-                ["Icecream", -22],
-                ["Jelly", 9],
-                ["Kiwi", 89],
-                ["Lemon", 30],
-                ["Mango", 58],
-                ["Nectarine", 23],
-                ["Orange", 10],
-                ["Papaya", 7],
-                ["Quince", 51],
-                ["Raspberry", 94],
-                ["Strawberry", 2],
-                ["Tomato", 1]
+                ["Apple", 65, 70, -12],
+                ["Banana", 53, 58, 11],
+                ["Cherry", 14, 19, -8],
+                ["Date", 9, 14, 19],
+                ["Elderberry", 6, 10, -2],
+                ["Fig", -7, -10, 15],
+                ["Grape", 86, 90, -24],
+                ["Hamburger", 56, 60, 18],
+                ["Icecream", -22, -25, -9],
+                ["Jelly", 9, 12, 7],
+                ["Kiwi", 89, 95, -30],
+                ["Lemon", 30, 35, 12],
+                ["Mango", 58, 65, -14],
+                ["Nectarine", 23, 28, 6],
+                ["Orange", 10, 15, -4],
+                ["Papaya", -7, 10, 17],
+                ["Quince", 51, 55, -9],
+                ["Raspberry", 94, 98, 22],
+                ["Strawberry", 2, 5, -3],
+                ["Tomato", 1, 3, 8]
             ]
         };
+
         const data2 = {
+            columns: ["Key", "Value1", "Value2", "Value3"],
+            rows: [
+                ["Apple", 65, 70, 12],
+                ["Banana", 53, 58, 11],
+                ["Cherry", 14, 19, 8],
+                ["Date", 9, 14, 19],
+                ["Elderberry", 6, 10, 2],
+                ["Fig", 7, 10, 15],
+                ["Grape", 86, 90, 24],
+                ["Hamburger", 56, 60, 18],
+                ["Icecream", 22, 25, 9],
+                ["Jelly", 9, 12, 7],
+                ["Kiwi", 89, 95, 30],
+                ["Lemon", 30, 35, 12],
+                ["Mango", 58, 65, 14],
+                ["Nectarine", 23, 28, 6],
+                ["Orange", 10, 15, 4],
+                ["Papaya", 7, 10, 17],
+                ["Quince", 51, 55, 9],
+                ["Raspberry", 94, 98, 22],
+                ["Strawberry", 2, 5, 3],
+                ["Tomato", 1, 3, 8]
+            ]
+        };
+
+        const data3= {
             columns: ["Category", "Value"],
             rows: [
                 ["A", 0],
@@ -49,7 +113,7 @@
                 ["H", 0],
             ]
         };
-        const data3 = {
+        const data4 = {
             columns: ["Category", "Value"],
             rows: [
                 ["A", 1],
@@ -62,7 +126,7 @@
                 ["H", 0],
             ]
         };
-        const data4 = {
+        const data5 = {
             columns: ["Category", "Value"],
             rows: [
                 ["A", 1],
@@ -71,8 +135,8 @@
             ]
         };
         await init();
-        render_bar_chart('myCanvas', data1)
-        //render_pie_chart('myCanvas', data1);
+        render_bar_chart('myCanvas1', data1, barconfig)
+        render_pie_chart('myCanvas2', data2);
     </script>
 </body>
 </html>
