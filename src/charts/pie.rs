@@ -49,18 +49,21 @@ impl PieConfig {
     //todo izveidot pareizu validaciju
     fn validate(&self) -> Result<(), JsValue> {
         let err = |m: &str| Err(JsValue::from_str(m));
-        if self.sort_asc && self.sort_desc {
-            return err("sort_asc and sort_desc cannot both be true");
-        }
+        // if self.sort_asc && self.sort_desc {
+        //     return err("sort_asc and sort_desc cannot both be true");
+        // }
         if self.value_column.is_empty() {
             return err("value_column must contain at least one column index");
         }
-        if self.width <= 0.0 || self.height <= 0.0 {
-            return err("width and height must be positive");
+        if self.cx <= 0.0 || self.cy <= 0.0 {
+            return err("center coordinates must be positive");
         }
-        // if !(0.0..=1.0).contains(&self.step_fraction) || self.step_fraction == 0.0 {
-        //     return err("step_fraction must be in (0, 1]");
-        // }
+        if self.outer_r <= 0.0 {
+            return err("outer radius must be positive");
+        }
+        if self.inner_r_diff <= 0.0 || self.inner_r_diff >= self.outer_r {
+            return err("inner radius difference must be positive and less than outer radius");
+        }
         Ok(())
     }
 }

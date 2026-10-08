@@ -32,20 +32,17 @@
 
         const pieconfig = {
             label_column: 0,
-            value_column: [1, 2, 3],
-            vert: true,
-            sort_asc: false,
-            sort_desc: false,
-            sub_color: true,
-            sub_stack: true,
-            start_x:50.0,
-            start_y:50.0,
-            height: 300.0,
-            width: 400.0, 
-            font_size: 10.0,
-            font: "10px sans-serif",
+            value_column: [1, 2],
+            cx: 200.0,
+            cy: 200.0,
+            outer_r: 100.0,
+            inner_r_diff: 20.0,
+            default_font_size: 10.0,
+            default_font: "10px sans-serif",
+            middle_font_size: 54.0,
+            middle_font: "54px sans-serif",
             text_color: "black",
-            step_fraction: 1.0
+            hover_title_color: "blue"
         }
 
         const data1 = {
@@ -136,7 +133,7 @@
         };
         await init();
         render_bar_chart('myCanvas1', data1, barconfig)
-        render_pie_chart('myCanvas2', data2);
+        render_pie_chart('myCanvas2', data2, pieconfig);
     </script>
 </body>
 </html>
