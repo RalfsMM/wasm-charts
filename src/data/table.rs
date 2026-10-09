@@ -14,10 +14,10 @@ pub fn parse(table_json: JsValue) -> Result<Table, JsValue> {
         .map_err(|e| JsValue::from_str(&format!("failed to parse table: {e}")))
 }
 
-pub fn value(table: &Table, row: usize, col: Vec<usize>)->f64{
+pub fn value(table: &Table, row: usize, col: &[usize])->f64{
     let mut res=0.0;
     for i in col{
-        res+=cell_as_f64(table, row, i);
+        res+=cell_as_f64(table, row, *i);
     }
     res
 }

@@ -27,8 +27,8 @@ impl Points for PieConfig {
     fn label_col(&self) -> usize {
         self.label_column
     }
-    fn value_col(&self) -> Vec<usize> {
-        self.value_column.clone()
+    fn value_col(&self) -> &[usize] {
+        &self.value_column
     }
 }
 //Noklusejuma vertibas, pirma kollona key, otra value
@@ -49,9 +49,6 @@ impl PieConfig {
     //todo izveidot pareizu validaciju
     fn validate(&self) -> Result<(), JsValue> {
         let err = |m: &str| Err(JsValue::from_str(m));
-        // if self.sort_asc && self.sort_desc {
-        //     return err("sort_asc and sort_desc cannot both be true");
-        // }
         if self.value_column.is_empty() {
             return err("value_column must contain at least one column index");
         }
@@ -73,18 +70,18 @@ pub struct PieSlice {
     pub label: String,
     pub angle_start: f64,
     pub angle_end: f64,
-    pub color: String,
+    pub color: &'static str,
     pub percent: f64,
     pub sub_points: Option<Vec<DataPoint>>, // optional sub-points for drill-down
 }
 
 //funkcija kas nosaka sektoru kraasas atkariba no index
-fn palette_color(index: usize) -> String {
+fn palette_color(index: usize) -> &'static str {
     let colors = [
         "#FF6384", "#36A2EB", "#FFCE56", "#4BC0C0", "#9966FF",
         "#FF9F40", "#E7E9ED", "#76B041", "#F7464A", "#46BFBD",
     ];
-    colors[index % colors.len()].to_string()
+    colors[index % colors.len()]
 }
 
 //Info par veselu chart, domats prieks drilldown, jo tad no vienas tabulas ir vairaki charti, so te info par tiem
@@ -113,7 +110,7 @@ impl PieChartHandle {
 
 //globalais mainigais, stack ar visiem chartiem drilldownaa, kur last ir aktivais
 thread_local! {
-    static CHART_STACK: RefCell<Vec<PieChartHandle>> = RefCell::new(Vec::new());
+    static CHART_STACK: RefCell<Vec<PieChartHandle>> = const{ RefCell::new(Vec::new()) };
 }
 
 //funkcija prieks lib.rs lai initial chartu ieliktu stekaa
@@ -143,7 +140,7 @@ pub fn compute_pie_slices(mut points: Vec<DataPoint>, fraction: f64) -> Result<V
     let mut angle = -std::f64::consts::PI / 2.0;
 
     //mazakie slices salikti kopaa, kaa others
-    let mut others: PieSlice = PieSlice { label: "Others".to_string(), angle_start: -std::f64::consts::PI / 2.0, angle_end: 0.0, color: "#808080".to_string(), percent: 0.0, sub_points: None };
+    let mut others: PieSlice = PieSlice { label: "Others".to_string(), angle_start: -std::f64::consts::PI / 2.0, angle_end: 0.0, color: "#808080", percent: 0.0, sub_points: None };
 
     let mut slices: Vec<PieSlice> = points
         .into_iter()
@@ -191,7 +188,7 @@ pub fn compute_pie_slices(mut points: Vec<DataPoint>, fraction: f64) -> Result<V
 }
 
 //uzzime pie atbilstosi lenkiem, radiusiem utt. So izmanto independently no pie stavokla
-pub fn draw_pie( canvas: &web_sys::HtmlCanvasElement, slices: &[PieSlice], geo: &PieConfig, radii: &[f64], angles: &Vec<[f64; 2]>, title_hover: &Option<usize>, slice_hover: &Option<usize>) -> Result<(), JsValue> {
+pub fn draw_pie( canvas: &web_sys::HtmlCanvasElement, slices: &[PieSlice], geo: &PieConfig, radii: &[f64], angles: &[[f64; 2]], title_hover: &Option<usize>, slice_hover: &Option<usize>) -> Result<(), JsValue> {
     let context = crate::canvas::get_context(canvas)?;
     context.clear_rect(0.0, 0.0, canvas.width() as f64, canvas.height() as f64);
     
@@ -233,11 +230,8 @@ pub fn draw_pie( canvas: &web_sys::HtmlCanvasElement, slices: &[PieSlice], geo: 
     for (i, slice) in slices.iter().enumerate() {
         let outer_r = radii[i];
         let inner_r = outer_r -geo.inner_r_diff;
-        let start_angle;
-        let end_angle;
-
-        start_angle = angles[i][0];
-        end_angle = angles[i][1];
+        let start_angle=angles[i][0];
+        let end_angle= angles[i][1];
 
         context.begin_path();
         context.move_to(geo.cx, geo.cy);
@@ -256,14 +250,14 @@ pub fn draw_pie( canvas: &web_sys::HtmlCanvasElement, slices: &[PieSlice], geo: 
             context.set_font(default_font);
 
             let mid_angle = (start_angle + end_angle) / 2.0;
-            let label_x;
-            if mid_angle < std::f64::consts::PI / 2.0 || mid_angle > std::f64::consts::PI * 3.0 / 2.0 {
+            let label_x=
+            if !(std::f64::consts::PI / 2.0..=std::f64::consts::PI * 3.0 / 2.0).contains(&mid_angle) {
                 context.set_text_align("left");
-                label_x = outer_r + geo.cx + geo.outer_r/5.0;
+                outer_r + geo.cx + geo.outer_r/5.0
             } else {
                 context.set_text_align("right");
-                label_x = geo.cx - outer_r - geo.outer_r/5.0;
-            }
+                geo.cx - outer_r - geo.outer_r/5.0
+            };
             let label_y = geo.cy + outer_r * mid_angle.sin();
             context
                 .fill_text(&slice.label, label_x, label_y)
@@ -427,22 +421,19 @@ pub fn render_interactive_pie(canvas_id: &str, points: Vec<DataPoint>, chart_lab
         let slice_hit = hit_test_slices(&slices_for_click, &geo_for_click, mx, my);
         if slice_hit.is_some() {
             for ( i, slice) in slices_for_click.iter().enumerate() {
-                if Some(i) == slice_hit {
-                    if slice.sub_points.is_some() {
-                        *running_for_click.borrow_mut() = false;
+                if Some(i) == slice_hit && slice.sub_points.is_some() {
+                    *running_for_click.borrow_mut() = false;
 
-                        CHART_STACK.with(|stack| {
-                            if let Some(old_handle) = stack.borrow_mut().last() {
-                                old_handle.stop();
-                            }
-                        });
-
-                        if let Ok(new_handle) = render_interactive_pie(canvas_for_click.id().as_str(), slice.sub_points.clone().unwrap(), slice.label.clone(), slice.percent, &geo_for_click) {
-                            CHART_STACK.with(|stack| stack.borrow_mut().push(new_handle));
+                    CHART_STACK.with(|stack| {
+                        if let Some(old_handle) = stack.borrow_mut().last() {
+                            old_handle.stop();
                         }
+                    });
 
-                        break;
+                    if let Ok(new_handle) = render_interactive_pie(canvas_for_click.id().as_str(), slice.sub_points.clone().unwrap(), slice.label.clone(), slice.percent, &geo_for_click) {
+                        CHART_STACK.with(|stack| stack.borrow_mut().push(new_handle));
                     }
+                    break;
                 }
             }
         }
@@ -455,7 +446,7 @@ pub fn render_interactive_pie(canvas_id: &str, points: Vec<DataPoint>, chart_lab
                 *running_for_click.borrow_mut() = false;
                 let points = charts[i].points.clone();
                 let label = charts[i].chart_label.clone();
-                let fract = charts[i].fraction.clone();
+                let fract = charts[i].fraction;
 
                 while charts.len() > i {
                     if let Some(old_chart) = charts.pop() {
@@ -554,8 +545,7 @@ fn current_radius(anim: &SliceAnimRadius, now_ms: f64) -> f64 {
 //aprekina kopejo lenki prieks animacijas
 fn current_angle_progress(anim: &SliceAnimAngle, now_ms: f64)-> f64{
     let elapsed = now_ms - anim.start_time;
-    let t = (elapsed / anim.duration_ms).clamp(0.0, 1.0);
-    t
+    (elapsed / anim.duration_ms).clamp(0.0, 1.0)
 }
 
 //aprekina lenki prieks animacijas

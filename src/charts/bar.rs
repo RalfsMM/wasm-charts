@@ -6,7 +6,7 @@ use std::rc::Rc;
 use std::cell::RefCell;
 
 pub struct BarChartHandle {
-    canvas: Rc<web_sys::HtmlCanvasElement>,
+    canvas: web_sys::HtmlCanvasElement,
     running: Rc<RefCell<bool>>,
     mouse_closure: Closure<dyn FnMut(web_sys::MouseEvent)>,
     click_closure: Closure<dyn FnMut(web_sys::MouseEvent)>,
@@ -29,11 +29,16 @@ impl BarChartHandle {
 
 //globalais mainigais, stack ar visiem chartiem drilldownaa, kur last ir aktivais
 thread_local! {
-    static CHART_STACK: RefCell<Vec<BarChartHandle>> = RefCell::new(Vec::new());
+    static CHART_STACK: RefCell<Vec<BarChartHandle>> = const { RefCell::new(Vec::new()) };
+}
+
+pub fn push_chart(handle: BarChartHandle) {
+    CHART_STACK.with(|stack| stack.borrow_mut().push(handle));
 }
 
 //Konfiguracija Bar chartam, geo
 #[derive(Clone, Deserialize)]
+#[serde(default)]
 pub struct BarConfig {
     pub label_column: usize,
     pub value_column: Vec<usize>,
@@ -56,8 +61,8 @@ impl Points for BarConfig {
     fn label_col(&self) -> usize {
         self.label_column
     }
-    fn value_col(&self) -> Vec<usize> {
-        self.value_column.clone()
+    fn value_col(&self) -> &[usize] {
+        &self.value_column
     }
 }
 
@@ -87,9 +92,9 @@ impl BarConfig {
         if self.width <= 0.0 || self.height <= 0.0 {
             return err("width and height must be positive");
         }
-        // if !(0.0..=1.0).contains(&self.step_fraction) || self.step_fraction == 0.0 {
-        //     return err("step_fraction must be in (0, 1]");
-        // }
+        if self.step_fraction <= 0.0{
+            return err("fraction must be positive");
+        }
         Ok(())
     }
 }
@@ -110,19 +115,17 @@ pub struct BarChart{
     pub top_lines: Vec<f64>,
     pub bottom_lines: Vec<f64>,
     pub exponent: f64,
+    pub value_pixels: f64,
 }
 
-fn palette_color(index: usize) -> String {
+fn palette_color(index: usize) -> &'static str {
     let colors = [
         "#FFCE56", "#4BC0C0", "#9966FF","#FF6384", "#36A2EB",
         "#FF9F40", "#E7E9ED", "#76B041", "#F7464A", "#46BFBD",
     ];
-    colors[index % colors.len()].to_string()
+    colors[index % colors.len()]
 }
 
-pub fn push_chart(handle: BarChartHandle) {
-    CHART_STACK.with(|stack| stack.borrow_mut().push(handle));
-}
 
 pub fn compute_vertical_bars( mut points: Vec<DataPoint>, config: &BarConfig) -> Result<BarChart, JsValue>{
     if config.sort_asc{
@@ -146,15 +149,20 @@ pub fn compute_vertical_bars( mut points: Vec<DataPoint>, config: &BarConfig) ->
     });
     //kkadu checku ja viss ir 0
     let point_count = points.len() as f64;
-    let avg;
-    if min_value==0.0 && max_value==0.0{
-        avg=1.0;
-    }else{
-        avg = total_value/point_count;
-    }
+    // let avg=
+    // if min_value==0.0 && max_value==0.0{
+    //     1.0
+    // }else{
+    //     total_value/point_count
+    // };
+    // let exponent = avg.abs().log10().floor();
+
     //kada desmit pakape ir average zinatniska pierakstaa skaitlim no datiem
-    let exponent = avg.abs().log10().floor();
-    //let exponent = max_value.abs().log10().floor();
+    let exponent = if max_value.abs()>min_value.abs(){
+        max_value.abs().log10().floor()
+    }else{
+        min_value.abs().log10().floor()
+    };
 
 
     //cik mervienibas viena iedala, aprekina ar configa dalskaitli un 10 exponent pakaapee
@@ -162,25 +170,24 @@ pub fn compute_vertical_bars( mut points: Vec<DataPoint>, config: &BarConfig) ->
     //cik iedalas bus charta uz pozitivo virzienu
     let step_amount_pos =(max_value/step).ceil()+2.0;
     //cik iedalas bus charta uz negativo virzienu
-    let step_amount_neg;
+    let step_amount_neg=
     if min_value != 0.0 {
-        step_amount_neg =(min_value.abs()/step).ceil();
+        (min_value.abs()/step).ceil()
     }else{
-        step_amount_neg=0.0;
-    }
+        0.0
+    };
     //iedalu linijas atstarpes
     let step_line_px=config.height/(step_amount_pos+ step_amount_neg);
 
     //cik pikseli ir viena datu mervieniba
     let one_px=step_line_px/step;
 
-    
-    let start_y;
+    let start_y=
     if min_value==0.0{
-        start_y =config.start_y+config.height;
+        config.start_y+config.height
     }else{
-        start_y=config.start_y+config.height-step_amount_neg*step_line_px;
-    }
+        config.start_y+config.height-step_amount_neg*step_line_px
+    };
 
     
     let bars:Vec<Bar> = points.into_iter().enumerate().map(|(i, p)|{
@@ -188,13 +195,13 @@ pub fn compute_vertical_bars( mut points: Vec<DataPoint>, config: &BarConfig) ->
             let width= 0.6*part;
             let height= one_px*p.value;
             let x =(i as f64 )* part + part*0.2+ config.start_x;
-            let subpoints = if p.sub_points.is_some() && !p.sub_points.as_ref().unwrap().is_empty() {
+            let sub_points = if p.sub_points.is_some() && !p.sub_points.as_ref().unwrap().is_empty() {
                 p.sub_points
             } else {
                 None
             };
 
-            Bar{label: p.label, value: p.value, width: width, height: height, start_x: x, start_y: start_y, sub_points: subpoints, part:part}
+            Bar{label: p.label, value: p.value, width, height, start_x: x, start_y, sub_points, part}
         })
         .collect();
     let mut bottom_lines=vec![];
@@ -210,13 +217,13 @@ pub fn compute_vertical_bars( mut points: Vec<DataPoint>, config: &BarConfig) ->
     i=1.0;
     while i<=step_amount_neg{
         let line_y=start_y+i*step_line_px;
-        let line_val = step*(-1.0)*i;
+        let line_val = -step*i;
         bottom_lines.push(line_y);
         bottom_lines.push(line_val);
         i+=1.0;
     }
 
-    let res= BarChart {bars: bars,bottom_lines: bottom_lines,top_lines: top_lines, exponent:exponent};
+    let res= BarChart {bars, bottom_lines, top_lines, exponent, value_pixels: one_px};
     Ok(res)
 }
 
@@ -241,15 +248,16 @@ pub fn compute_horizontal_bars(mut points: Vec<DataPoint>, config: &BarConfig) -
     });
     //kkadu checku ja viss ir 0
     let point_count = points.len() as f64;
-    let avg;
-    if min_value==0.0 && max_value==0.0{
-        avg=1.0;
-    }else{
-        avg = total_value/point_count;
-    }
+    // let avg=
+    // if min_value==0.0 && max_value==0.0{
+    //     1.0
+    // }else{
+    //     total_value/point_count
+    // };
+    //let exponent = avg.abs().log10().floor();
+
     //kada desmit pakape ir average zinatniska pierakstaa skaitlim no datiem
-    let exponent = avg.abs().log10().floor();
-    //let exponent = max_value.abs().log10().floor();
+    let exponent = max_value.abs().log10().floor();
 
 
     //cik mervienibas viena iedala, aprekina ar configa dalskaitli un 10 exponent pakaapee
@@ -257,12 +265,12 @@ pub fn compute_horizontal_bars(mut points: Vec<DataPoint>, config: &BarConfig) -
     //cik iedalas bus charta uz pozitivo virzienu
     let step_amount_pos =(max_value/step).ceil()+2.0;
     //cik iedalas bus charta uz negativo virzienu
-    let step_amount_neg;
+    let step_amount_neg=
     if min_value != 0.0 {
-        step_amount_neg =(min_value.abs()/step).ceil();
+        (min_value.abs()/step).ceil()
     }else{
-        step_amount_neg=0.0;
-    }
+        0.0
+    };
     //iedalu linijas atstarpes
     let step_line_px=config.width/(step_amount_pos+ step_amount_neg);
 
@@ -270,12 +278,12 @@ pub fn compute_horizontal_bars(mut points: Vec<DataPoint>, config: &BarConfig) -
     let one_px=step_line_px/step;
 
     
-    let start_x;
+    let start_x=
     if min_value==0.0{
-        start_x =config.start_x;
+        config.start_x
     }else{
-        start_x=config.start_x + step_amount_neg*step_line_px;
-    }
+        config.start_x + step_amount_neg*step_line_px
+    };
 
     
     let bars:Vec<Bar> = points.into_iter().enumerate().map(|(i, p)|{
@@ -283,14 +291,14 @@ pub fn compute_horizontal_bars(mut points: Vec<DataPoint>, config: &BarConfig) -
             let height= 0.6*part;
             let width= one_px*p.value;
             let y =(i as f64 )* part + part*0.2+ config.start_y;
-            let subpoints = if p.sub_points.is_some() && !p.sub_points.as_ref().unwrap().is_empty() {
+            let sub_points = if p.sub_points.is_some() && !p.sub_points.as_ref().unwrap().is_empty() {
                 p.sub_points
             } else {
                 None
             };
 
 
-            Bar{label: p.label, value: p.value, width: height, height: width, start_x: start_x, start_y: y, sub_points: subpoints, part:part}
+            Bar{label: p.label, value: p.value, width: height, height: width, start_x, start_y: y, sub_points, part}
         })
         .collect();
     let mut bottom_lines=vec![];
@@ -306,20 +314,21 @@ pub fn compute_horizontal_bars(mut points: Vec<DataPoint>, config: &BarConfig) -
     i=1.0;
     while i<=step_amount_neg{
         let line_x=start_x-i*step_line_px;
-        let line_val = step*(-1.0)*i;
+        let line_val = -step*i;
         bottom_lines.push(line_x);
         bottom_lines.push(line_val);
         i+=1.0;
     }
 
-    let res= BarChart {bars: bars,bottom_lines: bottom_lines,top_lines: top_lines, exponent:exponent};
+    let res= BarChart {bars,bottom_lines,top_lines, exponent, value_pixels:one_px};
     Ok(res)
 }
 
-pub fn draw_bar_chart( canvas: &web_sys::HtmlCanvasElement, bars: &[Bar], geo: &BarConfig, top_lines: &Vec<f64>, bottom_lines: &Vec<f64>, exponent: f64, lenghts: &[f64], bar_hover: &Option<usize>, title_hover: &Option<usize>, value_labels: &Vec<String>, key_label: &String)->Result<(), JsValue>{
+
+pub fn draw_bar_chart( canvas: &web_sys::HtmlCanvasElement, bars: &[Bar], geo: &BarConfig, top_lines: &[f64], bottom_lines: &[f64], exponent: f64, progress: f64, bar_hover: &Option<usize>, title_hover: &Option<usize>, value_labels: &[String], key_label: &str, one_px: f64)->Result<(), JsValue>{
     let context = crate::canvas::get_context(canvas)?;
     context.clear_rect(0.0, 0.0, canvas.width() as f64, canvas.height() as f64);
-    let default_size = geo.font_size;
+    let font_size = geo.font_size;
     let font=geo.font.as_str();
     let text_color =geo.text_color.as_str();
     let all_val_lab= value_labels.join("  ");
@@ -343,7 +352,7 @@ pub fn draw_bar_chart( canvas: &web_sys::HtmlCanvasElement, bars: &[Bar], geo: &
             let label;
             if indent>0.0{
                 label = format!("/{}", chart.chart_label);
-                indent +=default_size/3.0;
+                indent +=font_size/3.0;
             }else{
                 label = chart.chart_label.clone();
             }
@@ -359,13 +368,13 @@ pub fn draw_bar_chart( canvas: &web_sys::HtmlCanvasElement, bars: &[Bar], geo: &
     if geo.vert{
         context.set_text_align("left");
         context.set_text_baseline("bottom");
-        context.fill_text(&all_val_lab, geo.start_x, geo.start_y-default_size)?;
+        context.fill_text(&all_val_lab, geo.start_x, geo.start_y-font_size)?;
         context.fill_text(key_label, geo.start_x+geo.width, geo.start_y+geo.height)?;
         context.set_text_baseline("top");
         
         if geo.sub_color && value_labels.len()>1{
              for (i,lab) in value_labels.iter().enumerate(){
-                context.set_fill_style_str(&palette_color(i));
+                context.set_fill_style_str(palette_color(i));
                 context.fill_rect(geo.start_x + geo.width+ geo.font_size, geo.start_y+2.0*geo.font_size*(i as f64), geo.font_size, geo.font_size);
                 context.set_fill_style_str(text_color);
                 context.fill_text(lab, geo.start_x+geo.width + 3.0*geo.font_size, geo.start_y+2.0*geo.font_size*(i as f64))?;
@@ -382,12 +391,12 @@ pub fn draw_bar_chart( canvas: &web_sys::HtmlCanvasElement, bars: &[Bar], geo: &
         while i<top_lines.len(){
             context.move_to(geo.start_x, top_lines[i]);
             context.line_to(geo.start_x+geo.width, top_lines[i]);
-            let exp;
+            let exp=
             if exponent>0.0{
-                exp=0;
+                0
             }else{
-                exp=-exponent as usize;
-            }
+                -exponent as usize
+            };
             let label=format!("{:.exp$}  ",top_lines[i+1]);
             context.fill_text(&label, geo.start_x, top_lines[i])?;
             i+=2;
@@ -396,12 +405,12 @@ pub fn draw_bar_chart( canvas: &web_sys::HtmlCanvasElement, bars: &[Bar], geo: &
         while i<bottom_lines.len(){
             context.move_to(geo.start_x, bottom_lines[i]);
             context.line_to(geo.start_x+geo.width, bottom_lines[i]);
-            let exp;
+            let exp=
             if exponent>0.0{
-                exp=0;
+                0
             }else{
-                exp=-exponent as usize;
-            }
+                -exponent as usize
+            };
             let label=format!("{:.exp$}  ",bottom_lines[i+1]);
             context.fill_text(&label, geo.start_x, bottom_lines[i])?;
             i+=2;
@@ -415,63 +424,64 @@ pub fn draw_bar_chart( canvas: &web_sys::HtmlCanvasElement, bars: &[Bar], geo: &
                 context.set_global_alpha(0.1);
                 context.fill_rect(bar.start_x-bar.part*0.2, geo.start_y, bar.part, geo.height);
                 context.set_global_alpha(1.0);
-                context.fill_rect(bar.start_x, bar.start_y, bar.width, -lenghts[i]);
+                context.fill_rect(bar.start_x, bar.start_y, bar.width, -progress*bar.height);
             }else{
-                if bar.sub_points.is_some(){
+                if let Some(subs)=&bar.sub_points{
                     if geo.sub_stack{
                         if geo.sub_color{
-			    let mut last_y_pos=bar.start_y;
-			    let mut last_y_neg=bar.start_y;
-			    for (j, p) in bar.sub_points.clone().unwrap().iter().enumerate(){
-			        context.set_fill_style_str(&palette_color(j));
-			        if p.value>0.0{
-			            context.fill_rect(bar.start_x, last_y_pos, bar.width, -lenghts[i]/bar.value*p.value);
-			            last_y_pos-=lenghts[i]/bar.value*p.value;
-			        }else{
-			            context.fill_rect(bar.start_x, last_y_neg, bar.width, -lenghts[i]/bar.value*p.value);
-			            last_y_neg-=lenghts[i]/bar.value*p.value;
-			        }
+                            let mut last_y_pos=bar.start_y;
+                            let mut last_y_neg=bar.start_y;
+                            for (j, p) in subs.iter().enumerate(){
+                                context.set_fill_style_str(palette_color(j));
+                                if p.value>0.0{
+                                    context.fill_rect(bar.start_x, last_y_pos, bar.width, -progress*one_px*p.value);
+                                    last_y_pos-=progress*one_px*p.value;
+                                }else{
+                                    context.fill_rect(bar.start_x, last_y_neg, bar.width, -progress*one_px*p.value);
+                                    last_y_neg-=progress*one_px*p.value;
+                                }
 
-			    }
+                            }
+                
                         }else{
-                            context.fill_rect(bar.start_x, bar.start_y, bar.width, -lenghts[i]);
+                            context.fill_rect(bar.start_x, bar.start_y, bar.width, -progress*bar.height);
                         }
                     }else{
                         if geo.sub_color{
                             let mut last_x=bar.start_x;
-                            let width=bar.width/(bar.sub_points.clone().unwrap().len() as f64);
-                            for (j, p) in bar.sub_points.clone().unwrap().iter().enumerate(){
-                                context.set_fill_style_str(&palette_color(j));
-                                context.fill_rect(last_x, bar.start_y,  width, -lenghts[i]/bar.value*p.value);
+                            let width=bar.width/(subs.len() as f64);
+                            for (j, p) in subs.iter().enumerate(){
+                                context.set_fill_style_str(palette_color(j));
+                                context.fill_rect(last_x, bar.start_y,  width, -progress*one_px*p.value);
                                 last_x+=width;
                             }
                         }else{
                             let mut last_x=bar.start_x;
-                            let width=bar.width/(bar.sub_points.clone().unwrap().len() as f64);
-                            for p in bar.sub_points.clone().unwrap(){
-                                context.fill_rect(last_x, bar.start_y,  width, -lenghts[i]/bar.value*p.value);
+                            let width=bar.width/(subs.len() as f64);
+                            for p in subs{
+                                context.fill_rect(last_x, bar.start_y,  width, -progress*one_px*p.value);
                                 last_x+=width;
                             }
                         }
                     }
                 }else{
                     if geo.sub_color && CHART_STACK.with(|stack| stack.borrow().len()>1){
-                        context.set_fill_style_str(&palette_color(i));
+                        context.set_fill_style_str(palette_color(i));
                     }
-                    context.fill_rect(bar.start_x, bar.start_y, bar.width, -lenghts[i]);
+                    context.fill_rect(bar.start_x, bar.start_y, bar.width, -progress*bar.height);
                 }
                 context.set_fill_style_str("black");
             }
 
             
             // let value=format!("{}",bar.value);
-            // if lenghts[i]>0.0{
+            // if lengths[i]>0.0{
             //     context.set_text_baseline("bottom");
             // }else{
             //     context.set_text_baseline("top");
             // }
             // context.set_text_align("middle");
-            // context.fill_text(&value, bar.start_x+bar.width/1.2, bar.start_y -lenghts[i])?;
+            // context.fill_text(&value, bar.start_x+bar.width/1.2, bar.start_y -lengths[i])?;
             context.save();
             context.translate(bar.start_x+(bar.width/2.0), geo.start_y + geo.height + 0.3*geo.font_size)?;// move origin to where the text should be
             context.rotate(-std::f64::consts::PI / 2.0)?;
@@ -499,7 +509,7 @@ pub fn draw_bar_chart( canvas: &web_sys::HtmlCanvasElement, bars: &[Bar], geo: &
         for (i,lab) in value_labels.iter().enumerate(){
             let mut gap=geo.font_size;
             if geo.sub_color && value_labels.len()>1{
-                context.set_fill_style_str(&palette_color(i));
+                context.set_fill_style_str(palette_color(i));
                 context.fill_rect(geo.start_x + geo.width+ geo.font_size, geo.start_y+2.0*geo.font_size*(i as f64), geo.font_size, geo.font_size);
                 gap *= 3.0;
             }
@@ -517,12 +527,12 @@ pub fn draw_bar_chart( canvas: &web_sys::HtmlCanvasElement, bars: &[Bar], geo: &
         while i<top_lines.len(){
             context.move_to( top_lines[i],geo.start_y);
             context.line_to(top_lines[i], geo.start_y+geo.height);
-            let exp;
+            let exp=
             if exponent>0.0{
-                exp=0;
+                0
             }else{
-                exp=-exponent as usize;
-            }
+                -exponent as usize
+            };
             let label=format!("{:.exp$}",top_lines[i+1]);
 
             context.save();
@@ -539,12 +549,12 @@ pub fn draw_bar_chart( canvas: &web_sys::HtmlCanvasElement, bars: &[Bar], geo: &
         while i<bottom_lines.len(){
             context.move_to( bottom_lines[i], geo.start_y);
             context.line_to(bottom_lines[i], geo.start_y+geo.height);
-            let exp;
+            let exp=
             if exponent>0.0{
-                exp=0;
+                0
             }else{
-                exp=-exponent as usize;
-            }
+                -exponent as usize
+            };
             let label=format!("{:.exp$}",bottom_lines[i+1]);
 
             context.save();
@@ -565,49 +575,49 @@ pub fn draw_bar_chart( canvas: &web_sys::HtmlCanvasElement, bars: &[Bar], geo: &
                 context.set_global_alpha(0.1);
                 context.fill_rect(geo.start_x,bar.start_y-bar.part*0.2, geo.width, bar.part);
                 context.set_global_alpha(1.0);
-                context.fill_rect(bar.start_x, bar.start_y, lenghts[i], bar.width);
+                context.fill_rect(bar.start_x, bar.start_y, progress*bar.height, bar.width);
             }else{
-                if bar.sub_points.is_some(){
+                if let Some(subs) = &bar.sub_points{
                     if geo.sub_stack{
                         if geo.sub_color{
                             let mut last_x_pos=bar.start_x;
                             let mut last_x_neg=bar.start_x;
-                            for (j, p) in bar.sub_points.clone().unwrap().iter().enumerate(){
-                                context.set_fill_style_str(&palette_color(j));
+                            for (j, p) in subs.iter().enumerate(){
+                                context.set_fill_style_str(palette_color(j));
                                 if p.value>0.0{
-                                    context.fill_rect(last_x_pos,bar.start_y, lenghts[i]/bar.value*p.value,bar.width,);
-                                    last_x_pos+=lenghts[i]/bar.value*p.value;
+                                    context.fill_rect(last_x_pos,bar.start_y, progress*one_px*p.value,bar.width,);
+                                    last_x_pos+=progress*one_px*p.value
                                 }else{
-                                    context.fill_rect(last_x_neg, bar.start_y, lenghts[i]/bar.value*p.value, bar.width);
-                                    last_x_neg+=lenghts[i]/bar.value*p.value;
+                                    context.fill_rect(last_x_neg, bar.start_y, progress*one_px*p.value, bar.width);
+                                    last_x_neg+=progress*one_px*p.value;
                                 }
                             }
                         }else{
-                            context.fill_rect(bar.start_x, bar.start_y, lenghts[i], bar.width);
+                            context.fill_rect(bar.start_x, bar.start_y, progress*bar.height, bar.width);
                         }
                     }else{
                         if geo.sub_color{
                             let mut last_y=bar.start_y;
-                            let height=bar.width/(bar.sub_points.clone().unwrap().len() as f64);
-                            for (j, p) in bar.sub_points.clone().unwrap().iter().enumerate(){
-                                context.set_fill_style_str(&palette_color(j));
-                                context.fill_rect(bar.start_x, last_y,  lenghts[i]/bar.value*p.value, height);
+                            let height=bar.width/(subs.len() as f64);
+                            for (j, p) in subs.iter().enumerate(){
+                                context.set_fill_style_str(palette_color(j));
+                                context.fill_rect(bar.start_x, last_y,  progress*one_px*p.value, height);
                                 last_y+=height;
                             }
                         }else{
                             let mut last_y=bar.start_y;
-                            let height=bar.width/(bar.sub_points.clone().unwrap().len() as f64);
-                            for p in bar.sub_points.clone().unwrap(){
-                                context.fill_rect(bar.start_x, last_y, lenghts[i]/bar.value*p.value, height);
+                            let height=bar.width/(subs.len() as f64);
+                            for p in subs{
+                                context.fill_rect(bar.start_x, last_y, progress*p.value*p.value, height);
                                 last_y+=height;
                             }
                         }
                     }
                 }else{
                     if geo.sub_color && CHART_STACK.with(|stack| stack.borrow().len()>1){
-                        context.set_fill_style_str(&palette_color(i));
+                        context.set_fill_style_str(palette_color(i));
                     }
-                    context.fill_rect(bar.start_x, bar.start_y, lenghts[i], bar.width);
+                    context.fill_rect(bar.start_x, bar.start_y, progress*bar.height, bar.width);
                 }
                 context.set_fill_style_str("black");
             }
@@ -680,23 +690,20 @@ fn hit_test_titles(mx: f64, my: f64, geo: &BarConfig) -> Option<usize> {
     })
 }
 
-pub fn render_bar_chart(canvas_id: &str, points: Vec<DataPoint>, chart_label: String, conf: &BarConfig, value_labels: Vec<String>, key_label: String) -> Result<BarChartHandle, JsValue> {
-    let barchart;
+pub fn render_bar_chart(canvas_id: &str, points: Vec<DataPoint>, chart_label: String, conf: Rc<BarConfig>, value_labels: Rc<Vec<String>>, key_label: Rc<String>) -> Result<BarChartHandle, JsValue> {
     let config=conf.clone();
+    let barchart=
     if config.vert{
-        barchart= compute_vertical_bars(points.clone(), &config)?;
+        compute_vertical_bars(points.clone(), &config)?
     }else{
-        barchart=compute_horizontal_bars(points.clone(), &config)?;
-    }
+        compute_horizontal_bars(points.clone(), &config)?
+    };
 
     let bars = Rc::new(barchart.bars);
-    let canvas = Rc::new(crate::canvas::get_canvas(canvas_id)?);
-    let config=Rc::new(config);
+    let canvas = crate::canvas::get_canvas(canvas_id)?;
     let toplines=Rc::new(barchart.top_lines);
     let bottomlines=Rc::new(barchart.bottom_lines);
     let running = Rc::new(RefCell::new(true));
-    let value_labels = Rc::new(value_labels);
-    let key_label = Rc::new(key_label);
 
     let now_ms = web_sys::window()
         .and_then(|w| w.performance())
@@ -705,12 +712,7 @@ pub fn render_bar_chart(canvas_id: &str, points: Vec<DataPoint>, chart_label: St
 
     let hover_bar: Rc<RefCell<Option<usize>>> = Rc::new(RefCell::new(None));
     let hover_title: Rc<RefCell<Option<usize>>> = Rc::new(RefCell::new(None));
-    let anim_state: Rc<RefCell<Vec<BarAnimState>>> = Rc::new(RefCell::new(
-        bars
-            .iter()
-            .map(|bar| BarAnimState { start_h: 0.0, target_h: bar.height, start_time: now_ms })
-            .collect(),
-    ));
+    let anim_state: Rc<RefCell<BarAnimState>> = Rc::new(RefCell::new(BarAnimState {start_time: now_ms, start: 0.0, target: 1.0}));
 
     //mousemove listener un handler
     let canvas_for_mouse = canvas.clone();
@@ -759,22 +761,20 @@ pub fn render_bar_chart(canvas_id: &str, points: Vec<DataPoint>, chart_label: St
         let bar_hit = hit_test_bar(&bars_for_click,  mx, my, &config_for_click);
         if bar_hit.is_some() {
             for ( i, bar) in bars_for_click.iter().enumerate() {
-                if Some(i) == bar_hit {
-                    if bar.sub_points.is_some() {
-                        *running_for_click.borrow_mut() = false;
+                if Some(i) == bar_hit && bar.sub_points.is_some() {
+                    *running_for_click.borrow_mut() = false;
 
-                        CHART_STACK.with(|stack| {
-                            if let Some(old_handle) = stack.borrow_mut().last() {
-                                old_handle.stop();
-                            }
-                        });
-
-                        if let Ok(new_handle) = render_bar_chart(canvas_for_click.id().as_str(), bar.sub_points.clone().unwrap(), bar.label.clone(), &config_for_click, (*value_labels_for_click).clone(), (*key_label_for_click).clone()) {
-                            CHART_STACK.with(|stack| stack.borrow_mut().push(new_handle));
+                    CHART_STACK.with(|stack| {
+                        if let Some(old_handle) = stack.borrow().last() {
+                            old_handle.stop();
                         }
+                    });
 
-                        break;
+                    if let Ok(new_handle) = render_bar_chart(canvas_for_click.id().as_str(), bar.sub_points.clone().unwrap(), bar.label.clone(), config_for_click.clone(), value_labels_for_click.clone(), key_label_for_click.clone()) {
+                        CHART_STACK.with(|stack| stack.borrow_mut().push(new_handle));
                     }
+
+                    break;
                 }
             }
         }
@@ -790,11 +790,11 @@ pub fn render_bar_chart(canvas_id: &str, points: Vec<DataPoint>, chart_label: St
 
                 while charts.len() > i {
                     if let Some(old_chart) = charts.pop() {
-                        old_chart.stop();//kinda redundant, jo tikai augsejais stackaa var but running
+                        old_chart.stop();
                     }
                 }
                 drop(charts);
-                if let Ok(new_handle) = render_bar_chart(canvas_for_click.id().as_str(), points, label,  &config_for_click, (*value_labels_for_click).clone(), (*key_label_for_click).clone()) {
+                if let Ok(new_handle) = render_bar_chart(canvas_for_click.id().as_str(), points, label,  config_for_click.clone(), value_labels_for_click.clone(), key_label_for_click.clone()) {
                     CHART_STACK.with(|stack| stack.borrow_mut().push(new_handle));
                 }
             });
@@ -820,28 +820,28 @@ pub fn render_bar_chart(canvas_id: &str, points: Vec<DataPoint>, chart_label: St
             return false;
         }
         let now = web_sys::window().unwrap().performance().unwrap().now();
-        let lenghts: Vec<f64> = anim_for_loop.borrow().iter().map(|a| current_height(a, now)).collect();
+        let progress = current_progress(&anim_for_loop.borrow(), now);
         let hover_bar_value = *hover_bar_for_loop.borrow();
         let hover_title_value = *hover_title_for_loop.borrow();
-        let _ = draw_bar_chart(&canvas_for_loop, &bars_for_loop, &config_for_loop, &toplines_for_loop, &bottomlines_for_loop, barchart.exponent, &lenghts, &hover_bar_value, &hover_title_value, &value_labels_for_loop, &key_label_for_loop);
+        let _ = draw_bar_chart(&canvas_for_loop, &bars_for_loop, &config_for_loop, &toplines_for_loop, &bottomlines_for_loop, barchart.exponent, progress, &hover_bar_value, &hover_title_value, &value_labels_for_loop, &key_label_for_loop, barchart.value_pixels);
         true
     })?;
 
     //izmera cik gars ir title
     let context = crate::canvas::get_context(&canvas)?;
-    let textmetrics = context.measure_text(chart_label.as_str());
-    let text_w =textmetrics.unwrap().width();//chatins piedavaja map_err seit, es nez
+    context.set_font(&config.font);
+    let text_w =context.measure_text(&chart_label)?.width();
 
     Ok(BarChartHandle { canvas, running, mouse_closure, click_closure, chart_label, text_w, points })
 }
 
-pub fn current_height(anim: &BarAnimState, now_ms: f64)->f64{
+pub fn current_progress(anim: &BarAnimState, now_ms: f64)->f64{
     let elapsed = now_ms - anim.start_time;
     let t = (elapsed / 500.0).clamp(0.0, 1.0);
-    anim.start_h + (anim.target_h - anim.start_h) * t
+    anim.start + (anim.target - anim.start) * t
 }
 pub struct BarAnimState{
-    start_h:f64,
-    target_h:f64,
+    start:f64,
+    target:f64,
     start_time: f64,
 }
