@@ -6,13 +6,14 @@
     <title>WASM Charts</title>
 </head>
 <body>
+    <canvas id="myCanvas3" width="600" height="400" style="border:1px solid #000000;"></canvas>
+    <canvas id="myCanvas4" width="600" height="400" style="border:1px solid #000000;"></canvas>
     <canvas id="myCanvas1" width="600" height="450" style="border:1px solid #000000;"></canvas>
-    <canvas id="myCanvas2" width="600" height="400" style="border:1px solid #000000;"></canvas>
-
+    <canvas id="myCanvas2" width="600" height="450" style="border:1px solid #000000;"></canvas>
     <script type="module">
         import init, { render_pie_chart, render_bar_chart } from './pkg/wasm_charts.js';
 
-        const barconfig = {
+        const barconfig1 = {
             label_column: 0,
             value_column: [1, 2, 3],
             vert: true,
@@ -30,19 +31,54 @@
             step_fraction: 0.5
         }
 
-        const pieconfig = {
+        const barconfig2 = {
             label_column: 0,
             value_column: [1, 2],
+            vert: false,
+            sort_asc: false,
+            sort_desc: false,
+            sub_color: true,
+            sub_stack: false,
+            start_x:50.0,
+            start_y:50.0,
+            height: 300.0,
+            width: 400.0, 
+            font_size: 10.0,
+            font: "10px sans-serif",
+            text_color: "black",
+            step_fraction: 0.5
+        }
+
+        const pieconfig1 = {
+            label_column: 0,
+            value_column: [1,2],
             cx: 200.0,
             cy: 200.0,
             outer_r: 100.0,
             inner_r_diff: 20.0,
-            default_font_size: 10.0,
-            default_font: "10px sans-serif",
+            font_size: 10.0,
+            font: "10px sans-serif",
             middle_font_size: 54.0,
             middle_font: "54px sans-serif",
             text_color: "black",
-            hover_title_color: "blue"
+            hover_title_color: "blue",
+            entrance_dur: 500.0,
+        }
+
+        const pieconfig2 = {
+            label_column: 0,
+            value_column: [1],
+            cx: 200.0,
+            cy: 200.0,
+            outer_r: 100.0,
+            inner_r_diff: 30.0,
+            font_size: 10.0,
+            font: "10px sans-serif",
+            middle_font_size: 54.0,
+            middle_font: "54px sans-serif",
+            text_color: "black",
+            hover_title_color: "blue",
+            entrance_dur: 500.0,
         }
 
         const data1 = {
@@ -93,7 +129,7 @@
                 ["Quince", 51, 55, 9],
                 ["Raspberry", 94, 98, 22],
                 ["Strawberry", 2, 5, 3],
-                ["Tomato", 1, 3, 8]
+                ["Tomato", 1, 3, 8],
             ]
         };
 
@@ -107,20 +143,19 @@
                 ["E", 0],
                 ["F", 0],
                 ["G", 0],
-                ["H", 0],
+                ["H", 0]
             ]
         };
         const data4 = {
-            columns: ["Category", "Value"],
+            columns: ["Category", "Value1", "Value2"],
             rows: [
-                ["A", 1],
-                ["B", 0],
-                ["C", 2],
-                ["D", 0],
-                ["E", 3],
-                ["F", 0],
-                ["G", 4],
-                ["H", 0],
+                ["A", 1, 2],
+                ["B", 0, 5],
+                ["C", 2, 2],
+                ["D", 0, 0],
+                ["E", 3, -1],
+                ["F", 6, 1],
+                ["G", 4, 0],
             ]
         };
         const data5 = {
@@ -131,9 +166,13 @@
                 ["C", 2],
             ]
         };
+        
+        
         await init();
-        render_bar_chart('myCanvas1', data1, barconfig)
-        render_pie_chart('myCanvas2', data2, pieconfig);
+        render_pie_chart('myCanvas3', data2, pieconfig1);
+        render_pie_chart('myCanvas4', data3, pieconfig2);
+        render_bar_chart('myCanvas1', data1, barconfig1);
+        render_bar_chart('myCanvas2', data4, barconfig2);
     </script>
 </body>
 </html>

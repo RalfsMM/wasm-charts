@@ -4,36 +4,138 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use std::rc::Rc;
 use std::cell::RefCell;
+use std::collections::HashMap;
 
-pub struct BarChartHandle {
-    canvas: web_sys::HtmlCanvasElement,
-    running: Rc<RefCell<bool>>,
-    mouse_closure: Closure<dyn FnMut(web_sys::MouseEvent)>,
-    click_closure: Closure<dyn FnMut(web_sys::MouseEvent)>,
-    chart_label: String,
-    text_w: f64,
-    points: Vec<DataPoint>,
+thread_local! {
+    static CHARTS: RefCell<HashMap<String, BarChartController>> = RefCell::new(HashMap::new());
 }
-//Apstadina kada chartu un taa listeners
-impl BarChartHandle {
-    pub fn stop(&self) {
-        *self.running.borrow_mut() = false;
-        let _ = self.canvas.remove_event_listener_with_callback(
-            "mousemove", self.mouse_closure.as_ref().unchecked_ref(),
-        );
-        let _ = self.canvas.remove_event_listener_with_callback(
-            "click", self.click_closure.as_ref().unchecked_ref(),
-        );
+pub fn push_chart(canvas_id: &str, ctrl: BarChartController){
+    CHARTS.with(|c| c.borrow_mut().insert(canvas_id.to_string(), ctrl));
+}
+pub fn destroy_chart(canvas_id: &str) {
+    CHARTS.with(|c| c.borrow_mut().remove(canvas_id));
+}
+
+struct Level { label: String, text_w: f64, points: Vec<DataPoint> }
+
+struct ChartState {
+    canvas: web_sys::HtmlCanvasElement,
+    config: BarConfig,
+    history: Vec<Level>,
+    layout: BarChart,
+    anim_start: f64,
+    hover_bar: Option<usize>,
+    hover_title: Option<usize>,
+    dirty: bool,
+    value_labels: Vec<String>,
+    key_label: String,
+    context: web_sys::CanvasRenderingContext2d,
+}
+
+impl ChartState{
+    pub fn on_click(&mut self, mx: f64, my: f64) ->Result<(), wasm_bindgen::JsValue>{
+        if let Some(title_index) = self.hit_test_titles(mx, my) {
+            if title_index < self.history.len() - 1 {
+                self.history.truncate(title_index + 1);
+
+                self.current_level()?;
+            }
+        }else if let Some(i) = self.hit_test_bar(mx, my) {
+            let bar=&self.layout.bars[i];
+            if let Some(subs) = &bar.sub_points {
+                self.history.push(Level {
+                    label: bar.label.clone(),
+                    text_w: self.measure(&bar.label)?,
+                    points: subs.clone(),
+                });
+                self.current_level()?;
+            }
+        }
+        Ok(())
+    }
+    pub fn current_level(&mut self)->Result<(), wasm_bindgen::JsValue>{
+        self.hover_bar=None;
+        self.hover_title=None;
+        let current_level = self.history.last().unwrap();
+        if self.config.vert{
+            self.layout = compute_vertical_bars(current_level.points.clone(), &self.config).unwrap();
+        }else{
+            self.layout = compute_horizontal_bars(current_level.points.clone(), &self.config).unwrap();
+        }
+        self.anim_start = now_ms();
+        self.dirty = true;
+        Ok(())
+    }
+
+    pub fn animating(&self, now: f64) -> bool {
+        now - self.anim_start < 500.0
+    }
+
+    pub fn current_progress(&self, now: f64)->f64{
+        let elapsed = now - self.anim_start;
+        (elapsed / 500.0).clamp(0.0, 1.0)
+    }
+    pub fn hit_test_bar(&self, mx: f64, my: f64)->Option<usize>{
+        let geo= &self.config;
+        let bars=&self.layout.bars;
+        if geo.vert{
+            for (i, bar) in bars.iter().enumerate(){
+                if
+                    mx>(bar.start_x-bar.part*0.2)
+                    && 
+                    mx<(bar.start_x+bar.part*0.8)
+                    &&
+                    my>(geo.start_y)
+                {
+                    return Some(i);
+                }
+            }
+        }else{
+            for (i, bar) in bars.iter().enumerate(){
+                if
+                    my>(bar.start_y-bar.part*0.2)
+                    && 
+                    my<(bar.start_y+bar.part*0.8)
+                    &&
+                    mx>geo.start_x
+                {
+                    return Some(i);
+                }
+            }
+        }
+        None
+    }
+
+    //parbauda vai padotas koordinatas ir uz kada title, un atgriez uz kura ja ir
+    fn hit_test_titles(&self, mx: f64, my: f64) -> Option<usize> {
+        let geo=&self.config;
+
+        if my<geo.start_y - 0.1*geo.height - geo.font_size||my>geo.start_y - 0.1*geo.height||mx<geo.start_x{
+            return None;
+        }
+
+        let charts=&self.history;
+        let mut indent=0.0;
+        for (i,chart) in charts.iter().enumerate() {
+            indent += chart.text_w+ geo.font_size/3.0;
+            if mx< geo.start_x + indent{
+                return Some(i);
+            }
+        }
+        None
+    }
+
+    fn measure(&self, text: &str) -> Result<f64, JsValue> {
+        self.context.set_font(&self.config.font);
+        Ok(self.context.measure_text(text)?.width())
     }
 }
 
-//globalais mainigais, stack ar visiem chartiem drilldownaa, kur last ir aktivais
-thread_local! {
-    static CHART_STACK: RefCell<Vec<BarChartHandle>> = const { RefCell::new(Vec::new()) };
-}
-
-pub fn push_chart(handle: BarChartHandle) {
-    CHART_STACK.with(|stack| stack.borrow_mut().push(handle));
+#[wasm_bindgen]
+pub struct BarChartController {
+    state: Rc<RefCell<ChartState>>,
+    mouse: Closure<dyn FnMut(web_sys::MouseEvent)>,
+    click: Closure<dyn FnMut(web_sys::MouseEvent)>
 }
 
 //Konfiguracija Bar chartam, geo
@@ -102,8 +204,8 @@ impl BarConfig {
 pub struct Bar{
     pub label: String,
     pub value: f64,
-    pub width: f64,
-    pub height: f64,
+    pub thickness: f64,
+    pub length: f64,
     pub start_x: f64,
     pub start_y: f64,
     pub sub_points: Option<Vec<DataPoint>>,
@@ -126,29 +228,46 @@ fn palette_color(index: usize) -> &'static str {
     colors[index % colors.len()]
 }
 
+fn now_ms() -> f64 {
+    web_sys::window()
+        .and_then(|w| w.performance())
+        .map(|p| p.now())
+        .unwrap_or(0.0)
+}
 
 pub fn compute_vertical_bars( mut points: Vec<DataPoint>, config: &BarConfig) -> Result<BarChart, JsValue>{
     if config.sort_asc{
-        points.sort_by(|a, b| a.value.partial_cmp(&b.value).unwrap_or(std::cmp::Ordering::Equal));
+        points.sort_by(|a, b| a.value.total_cmp(&b.value));
     }
     if config.sort_desc{
-        points.sort_by(|a, b| b.value.partial_cmp(&a.value).unwrap_or(std::cmp::Ordering::Equal));
+        points.sort_by(|a, b| b.value.total_cmp(&a.value));
     }
 
     let mut total_value=0.0;
     let mut max_value = 0.0;
     let mut min_value =0.0;
-    points.iter().for_each(|p| {
-        total_value+=p.value;
-        if p.value<min_value{
-            min_value=p.value;
+    points.iter().for_each(|point| {
+        if let Some(subpoints)=&point.sub_points{
+            subpoints.iter().for_each(|p| {
+                if p.value<min_value{
+                    min_value=p.value;
+                }
+                if p.value>max_value{
+                    max_value=p.value;
+                }
+            });
         }
-        if p.value>max_value{
-            max_value=p.value;
+        total_value+=point.value;
+        if point.value<min_value{
+            min_value=point.value;
+        }
+        if point.value>max_value{
+            max_value=point.value;
         }
     });
-    //kkadu checku ja viss ir 0
+
     let point_count = points.len() as f64;
+    
     // let avg=
     // if min_value==0.0 && max_value==0.0{
     //     1.0
@@ -158,7 +277,9 @@ pub fn compute_vertical_bars( mut points: Vec<DataPoint>, config: &BarConfig) ->
     // let exponent = avg.abs().log10().floor();
 
     //kada desmit pakape ir average zinatniska pierakstaa skaitlim no datiem
-    let exponent = if max_value.abs()>min_value.abs(){
+    let exponent = if min_value==0.0 && max_value==0.0{
+        1.0
+    }else if max_value.abs()>min_value.abs(){
         max_value.abs().log10().floor()
     }else{
         min_value.abs().log10().floor()
@@ -192,8 +313,8 @@ pub fn compute_vertical_bars( mut points: Vec<DataPoint>, config: &BarConfig) ->
     
     let bars:Vec<Bar> = points.into_iter().enumerate().map(|(i, p)|{
             let part = config.width/point_count;
-            let width= 0.6*part;
-            let height= one_px*p.value;
+            let thickness= 0.6*part;
+            let length= one_px*p.value;
             let x =(i as f64 )* part + part*0.2+ config.start_x;
             let sub_points = if p.sub_points.is_some() && !p.sub_points.as_ref().unwrap().is_empty() {
                 p.sub_points
@@ -201,7 +322,7 @@ pub fn compute_vertical_bars( mut points: Vec<DataPoint>, config: &BarConfig) ->
                 None
             };
 
-            Bar{label: p.label, value: p.value, width, height, start_x: x, start_y, sub_points, part}
+            Bar{label: p.label, value: p.value, thickness, length, start_x: x, start_y, sub_points, part}
         })
         .collect();
     let mut bottom_lines=vec![];
@@ -229,24 +350,33 @@ pub fn compute_vertical_bars( mut points: Vec<DataPoint>, config: &BarConfig) ->
 
 pub fn compute_horizontal_bars(mut points: Vec<DataPoint>, config: &BarConfig) -> Result<BarChart, JsValue>{
     if config.sort_asc{
-        points.sort_by(|a, b| a.value.partial_cmp(&b.value).unwrap_or(std::cmp::Ordering::Equal));
+        points.sort_by(|a, b| a.value.total_cmp(&b.value));
     }    
     if config.sort_desc{
-        points.sort_by(|a, b| b.value.partial_cmp(&a.value).unwrap_or(std::cmp::Ordering::Equal));
+        points.sort_by(|a, b| b.value.total_cmp(&a.value));
     }
     let mut total_value=0.0;
     let mut max_value = 0.0;
     let mut min_value =0.0;
-    points.iter().for_each(|p| {
-        total_value+=p.value;
-        if p.value<min_value{
-            min_value=p.value;
+    points.iter().for_each(|point| {
+        if let Some(subpoints)=&point.sub_points{
+            subpoints.iter().for_each(|p| {
+                if p.value<min_value{
+                    min_value=p.value;
+                }
+                if p.value>max_value{
+                    max_value=p.value;
+                }
+            });
         }
-        if p.value>max_value{
-            max_value=p.value;
+        total_value+=point.value;
+        if point.value<min_value{
+            min_value=point.value;
+        }
+        if point.value>max_value{
+            max_value=point.value;
         }
     });
-    //kkadu checku ja viss ir 0
     let point_count = points.len() as f64;
     // let avg=
     // if min_value==0.0 && max_value==0.0{
@@ -257,7 +387,14 @@ pub fn compute_horizontal_bars(mut points: Vec<DataPoint>, config: &BarConfig) -
     //let exponent = avg.abs().log10().floor();
 
     //kada desmit pakape ir average zinatniska pierakstaa skaitlim no datiem
-    let exponent = max_value.abs().log10().floor();
+    let exponent = if min_value==0.0 && max_value==0.0{
+        1.0
+    }else if max_value.abs()>min_value.abs(){
+        max_value.abs().log10().floor()
+    }else{
+        min_value.abs().log10().floor()
+    };
+
 
 
     //cik mervienibas viena iedala, aprekina ar configa dalskaitli un 10 exponent pakaapee
@@ -288,8 +425,8 @@ pub fn compute_horizontal_bars(mut points: Vec<DataPoint>, config: &BarConfig) -
     
     let bars:Vec<Bar> = points.into_iter().enumerate().map(|(i, p)|{
             let part = config.height/point_count;
-            let height= 0.6*part;
-            let width= one_px*p.value;
+            let thickness= 0.6*part;
+            let length= one_px*p.value;
             let y =(i as f64 )* part + part*0.2+ config.start_y;
             let sub_points = if p.sub_points.is_some() && !p.sub_points.as_ref().unwrap().is_empty() {
                 p.sub_points
@@ -298,7 +435,7 @@ pub fn compute_horizontal_bars(mut points: Vec<DataPoint>, config: &BarConfig) -
             };
 
 
-            Bar{label: p.label, value: p.value, width: height, height: width, start_x, start_y: y, sub_points, part}
+            Bar{label: p.label, value: p.value, thickness, length, start_x, start_y: y, sub_points, part}
         })
         .collect();
     let mut bottom_lines=vec![];
@@ -324,9 +461,22 @@ pub fn compute_horizontal_bars(mut points: Vec<DataPoint>, config: &BarConfig) -
     Ok(res)
 }
 
+fn draw_bar_chart( state:&ChartState, now: f64 )->Result<(), JsValue>{
+    let context = &state.context;
+    let canvas =&state.canvas;
+    let geo =&state.config;
+    let value_labels=&state.value_labels;
+    let title_hover=state.hover_title;
+    let key_label=&state.key_label;
+    let bar_hover=state.hover_bar;
+    let top_lines= &state.layout.top_lines;
+    let bottom_lines=&state.layout.bottom_lines;
+    let exponent =state.layout.exponent;
+    let bars=&state.layout.bars;
+    let one_px=state.layout.value_pixels;
 
-pub fn draw_bar_chart( canvas: &web_sys::HtmlCanvasElement, bars: &[Bar], geo: &BarConfig, top_lines: &[f64], bottom_lines: &[f64], exponent: f64, progress: f64, bar_hover: &Option<usize>, title_hover: &Option<usize>, value_labels: &[String], key_label: &str, one_px: f64)->Result<(), JsValue>{
-    let context = crate::canvas::get_context(canvas)?;
+    let progress=state.current_progress(now);
+
     context.clear_rect(0.0, 0.0, canvas.width() as f64, canvas.height() as f64);
     let font_size = geo.font_size;
     let font=geo.font.as_str();
@@ -339,30 +489,26 @@ pub fn draw_bar_chart( canvas: &web_sys::HtmlCanvasElement, bars: &[Bar], geo: &
     context.set_text_align("right");
     context.set_text_baseline("bottom");
 
-    
-    CHART_STACK.with(|stack| {
-        let charts = stack.borrow();
-        let mut indent= 0.0;
-        for (i, chart) in charts.iter().enumerate() {
-            if *title_hover == Some(i) {
-                context.set_fill_style_str("red");
-            } else {
-                context.set_fill_style_str(text_color);
-            }
-            let label;
-            if indent>0.0{
-                label = format!("/{}", chart.chart_label);
-                indent +=font_size/3.0;
-            }else{
-                label = chart.chart_label.clone();
-            }
-            indent += chart.text_w;
-            context
-                .fill_text(&label, geo.start_x + indent, geo.start_y - 0.1*geo.height)
-                .map_err(|_| JsValue::from_str("failed to draw chart label"))?;
+    let charts = &state.history;
+    let mut indent= 0.0;
+    for (i, chart) in charts.iter().enumerate() {
+        if title_hover == Some(i) {
+            context.set_fill_style_str("red");
+        } else {
+            context.set_fill_style_str(text_color);
         }
-        Ok::<(), JsValue>(())
-    })?;
+        let label;
+        if indent>0.0{
+            label = format!("/{}", chart.label);
+            indent +=font_size/3.0;
+        }else{
+            label = chart.label.clone();
+        }
+        indent += chart.text_w;
+        context
+            .fill_text(&label, geo.start_x + indent, geo.start_y - 0.1*geo.height)
+            .map_err(|_| JsValue::from_str("failed to draw chart label"))?;
+    }
     context.set_fill_style_str(text_color);
 
     if geo.vert{
@@ -419,12 +565,12 @@ pub fn draw_bar_chart( canvas: &web_sys::HtmlCanvasElement, bars: &[Bar], geo: &
         context.set_fill_style_str("black");
 
         for (i, bar) in bars.iter().enumerate(){
-            if *bar_hover==Some(i){
+            if bar_hover==Some(i){
                 context.set_fill_style_str("red");
                 context.set_global_alpha(0.1);
                 context.fill_rect(bar.start_x-bar.part*0.2, geo.start_y, bar.part, geo.height);
                 context.set_global_alpha(1.0);
-                context.fill_rect(bar.start_x, bar.start_y, bar.width, -progress*bar.height);
+                context.fill_rect(bar.start_x, bar.start_y, bar.thickness, -progress*bar.length);
             }else{
                 if let Some(subs)=&bar.sub_points{
                     if geo.sub_stack{
@@ -434,41 +580,41 @@ pub fn draw_bar_chart( canvas: &web_sys::HtmlCanvasElement, bars: &[Bar], geo: &
                             for (j, p) in subs.iter().enumerate(){
                                 context.set_fill_style_str(palette_color(j));
                                 if p.value>0.0{
-                                    context.fill_rect(bar.start_x, last_y_pos, bar.width, -progress*one_px*p.value);
+                                    context.fill_rect(bar.start_x, last_y_pos, bar.thickness, -progress*one_px*p.value);
                                     last_y_pos-=progress*one_px*p.value;
                                 }else{
-                                    context.fill_rect(bar.start_x, last_y_neg, bar.width, -progress*one_px*p.value);
+                                    context.fill_rect(bar.start_x, last_y_neg, bar.thickness, -progress*one_px*p.value);
                                     last_y_neg-=progress*one_px*p.value;
                                 }
 
                             }
                 
                         }else{
-                            context.fill_rect(bar.start_x, bar.start_y, bar.width, -progress*bar.height);
+                            context.fill_rect(bar.start_x, bar.start_y, bar.thickness, -progress*bar.length);
                         }
                     }else{
                         if geo.sub_color{
                             let mut last_x=bar.start_x;
-                            let width=bar.width/(subs.len() as f64);
+                            let thickness=bar.thickness/(subs.len() as f64);
                             for (j, p) in subs.iter().enumerate(){
                                 context.set_fill_style_str(palette_color(j));
-                                context.fill_rect(last_x, bar.start_y,  width, -progress*one_px*p.value);
-                                last_x+=width;
+                                context.fill_rect(last_x, bar.start_y,  thickness, -progress*one_px*p.value);
+                                last_x+=thickness;
                             }
                         }else{
                             let mut last_x=bar.start_x;
-                            let width=bar.width/(subs.len() as f64);
+                            let thickness=bar.thickness/(subs.len() as f64);
                             for p in subs{
-                                context.fill_rect(last_x, bar.start_y,  width, -progress*one_px*p.value);
-                                last_x+=width;
+                                context.fill_rect(last_x, bar.start_y,  thickness, -progress*one_px*p.value);
+                                last_x+=thickness;
                             }
                         }
                     }
                 }else{
-                    if geo.sub_color && CHART_STACK.with(|stack| stack.borrow().len()>1){
+                    if geo.sub_color && state.history.len()>1{
                         context.set_fill_style_str(palette_color(i));
                     }
-                    context.fill_rect(bar.start_x, bar.start_y, bar.width, -progress*bar.height);
+                    context.fill_rect(bar.start_x, bar.start_y, bar.thickness, -progress*bar.length);
                 }
                 context.set_fill_style_str("black");
             }
@@ -483,7 +629,7 @@ pub fn draw_bar_chart( canvas: &web_sys::HtmlCanvasElement, bars: &[Bar], geo: &
             // context.set_text_align("middle");
             // context.fill_text(&value, bar.start_x+bar.width/1.2, bar.start_y -lengths[i])?;
             context.save();
-            context.translate(bar.start_x+(bar.width/2.0), geo.start_y + geo.height + 0.3*geo.font_size)?;// move origin to where the text should be
+            context.translate(bar.start_x+(bar.thickness/2.0), geo.start_y + geo.height + 0.3*geo.font_size)?;// move origin to where the text should be
             context.rotate(-std::f64::consts::PI / 2.0)?;
             context.set_text_align("right");
             context.set_text_baseline("middle");
@@ -570,12 +716,12 @@ pub fn draw_bar_chart( canvas: &web_sys::HtmlCanvasElement, bars: &[Bar], geo: &
 
         context.set_fill_style_str(text_color);
         for (i, bar) in bars.iter().enumerate(){
-            if *bar_hover==Some(i){
+            if bar_hover==Some(i){
                 context.set_fill_style_str("red");
                 context.set_global_alpha(0.1);
                 context.fill_rect(geo.start_x,bar.start_y-bar.part*0.2, geo.width, bar.part);
                 context.set_global_alpha(1.0);
-                context.fill_rect(bar.start_x, bar.start_y, progress*bar.height, bar.width);
+                context.fill_rect(bar.start_x, bar.start_y, progress*bar.length, bar.thickness);
             }else{
                 if let Some(subs) = &bar.sub_points{
                     if geo.sub_stack{
@@ -585,45 +731,45 @@ pub fn draw_bar_chart( canvas: &web_sys::HtmlCanvasElement, bars: &[Bar], geo: &
                             for (j, p) in subs.iter().enumerate(){
                                 context.set_fill_style_str(palette_color(j));
                                 if p.value>0.0{
-                                    context.fill_rect(last_x_pos,bar.start_y, progress*one_px*p.value,bar.width,);
+                                    context.fill_rect(last_x_pos,bar.start_y, progress*one_px*p.value,bar.thickness,);
                                     last_x_pos+=progress*one_px*p.value
                                 }else{
-                                    context.fill_rect(last_x_neg, bar.start_y, progress*one_px*p.value, bar.width);
+                                    context.fill_rect(last_x_neg, bar.start_y, progress*one_px*p.value, bar.thickness);
                                     last_x_neg+=progress*one_px*p.value;
                                 }
                             }
                         }else{
-                            context.fill_rect(bar.start_x, bar.start_y, progress*bar.height, bar.width);
+                            context.fill_rect(bar.start_x, bar.start_y, progress*bar.length, bar.thickness);
                         }
                     }else{
                         if geo.sub_color{
                             let mut last_y=bar.start_y;
-                            let height=bar.width/(subs.len() as f64);
+                            let thickness=bar.thickness/(subs.len() as f64);
                             for (j, p) in subs.iter().enumerate(){
                                 context.set_fill_style_str(palette_color(j));
-                                context.fill_rect(bar.start_x, last_y,  progress*one_px*p.value, height);
-                                last_y+=height;
+                                context.fill_rect(bar.start_x, last_y,  progress*one_px*p.value, thickness);
+                                last_y+=thickness;
                             }
                         }else{
                             let mut last_y=bar.start_y;
-                            let height=bar.width/(subs.len() as f64);
+                            let thickness=bar.thickness/(subs.len() as f64);
                             for p in subs{
-                                context.fill_rect(bar.start_x, last_y, progress*p.value*p.value, height);
-                                last_y+=height;
+                                context.fill_rect(bar.start_x, last_y, progress*p.value*p.value, thickness);
+                                last_y+=thickness;
                             }
                         }
                     }
                 }else{
-                    if geo.sub_color && CHART_STACK.with(|stack| stack.borrow().len()>1){
+                    if geo.sub_color && state.history.len()>1{
                         context.set_fill_style_str(palette_color(i));
                     }
-                    context.fill_rect(bar.start_x, bar.start_y, progress*bar.height, bar.width);
+                    context.fill_rect(bar.start_x, bar.start_y, progress*bar.length, bar.thickness);
                 }
                 context.set_fill_style_str("black");
             }
             context.set_text_align("right");
             context.set_text_baseline("middle");
-            context.fill_text(&bar.label, geo.start_x-geo.font_size*0.3, bar.start_y)?;
+            context.fill_text(&bar.label, geo.start_x-geo.font_size*0.3, bar.start_y+(bar.thickness/2.0))?;
             context.set_fill_style_str("black");
         }
         context.begin_path();
@@ -643,205 +789,84 @@ pub fn draw_bar_chart( canvas: &web_sys::HtmlCanvasElement, bars: &[Bar], geo: &
     Ok(())
 }
 
-pub fn hit_test_bar(bars: &[Bar], mx:f64, my: f64, geo: &BarConfig)->Option<usize>{
-    if geo.vert{
-        for (i, bar) in bars.iter().enumerate(){
-            if
-                mx>(bar.start_x-bar.part*0.2)
-                && 
-                mx<(bar.start_x+bar.part*0.8)
-                &&
-                my>(geo.start_y)
-            {
-                return Some(i);
-            }
-        }
-    }else{
-        for (i, bar) in bars.iter().enumerate(){
-            if
-                my>(bar.start_y-bar.part*0.2)
-                && 
-                my<(bar.start_y+bar.part*0.8)
-                &&
-                mx>geo.start_x
-            {
-                return Some(i);
-            }
-        }
-    }
-    None
-}
-
-//parbauda vai padotas koordinatas ir uz kada title, un atgriez uz kura ja ir
-fn hit_test_titles(mx: f64, my: f64, geo: &BarConfig) -> Option<usize> {
-    if my<geo.start_y - 0.1*geo.height - geo.font_size||my>geo.start_y - 0.1*geo.height||mx<geo.start_x{
-        return None;
-    }
-    CHART_STACK.with(|stack|{
-        let charts=stack.borrow();
-        let mut indent=0.0;
-        for (i,chart) in charts.iter().enumerate() {
-            indent += chart.text_w+ geo.font_size/3.0;
-            if mx< geo.start_x + indent{
-                return Some(i);
-            }
-        }
-        None
-    })
-}
-
-pub fn render_bar_chart(canvas_id: &str, points: Vec<DataPoint>, chart_label: String, conf: Rc<BarConfig>, value_labels: Rc<Vec<String>>, key_label: Rc<String>) -> Result<BarChartHandle, JsValue> {
-    let config=conf.clone();
+pub fn render_bar_chart(canvas_id: &str, points: Vec<DataPoint>, chart_label: String, conf: BarConfig, value_labels: Vec<String>, key_label: String) -> Result<BarChartController, JsValue> {
+    let config=conf;
     let barchart=
     if config.vert{
         compute_vertical_bars(points.clone(), &config)?
     }else{
         compute_horizontal_bars(points.clone(), &config)?
     };
+    let canvas=crate::canvas::get_canvas(canvas_id)?;
+    let context=crate::canvas::get_context(&canvas)?;
+    context.set_font(&config.font);
+    let width=context.measure_text(&chart_label)?.width();
+    
+    let state = Rc::new(RefCell::new(ChartState {
+        canvas: canvas.clone(),
+        config,
+        history: vec![Level { label: chart_label.clone(), text_w:width, points }],
+        layout: barchart,
+        anim_start: web_sys::window()
+            .and_then(|w| w.performance())
+            .map(|p| p.now())
+            .ok_or_else(|| JsValue::from_str("no performance"))?,
+        hover_bar: None,
+        hover_title: None,
+        dirty: true,
+        value_labels,
+        key_label,
+        context,
+    }));
 
-    let bars = Rc::new(barchart.bars);
-    let canvas = crate::canvas::get_canvas(canvas_id)?;
-    let toplines=Rc::new(barchart.top_lines);
-    let bottomlines=Rc::new(barchart.bottom_lines);
-    let running = Rc::new(RefCell::new(true));
 
-    let now_ms = web_sys::window()
-        .and_then(|w| w.performance())
-        .map(|p| p.now())
-        .ok_or_else(|| JsValue::from_str("no performance"))?;
-
-    let hover_bar: Rc<RefCell<Option<usize>>> = Rc::new(RefCell::new(None));
-    let hover_title: Rc<RefCell<Option<usize>>> = Rc::new(RefCell::new(None));
-    let anim_state: Rc<RefCell<BarAnimState>> = Rc::new(RefCell::new(BarAnimState {start_time: now_ms, start: 0.0, target: 1.0}));
-
-    //mousemove listener un handler
-    let canvas_for_mouse = canvas.clone();
-    let bars_for_mouse = bars.clone();
-    let hover_bar_for_mouse = hover_bar.clone();
-    let hover_title_for_mouse = hover_title.clone();
-    let config_for_mouse=config.clone();
+    let state_for_mouse = state.clone();
 
     let mouse_closure = Closure::<dyn FnMut(web_sys::MouseEvent)>::new(move |event: web_sys::MouseEvent| {
-        let rect = canvas_for_mouse.get_bounding_client_rect();
+        let rect = state_for_mouse.borrow().canvas.get_bounding_client_rect();
         let mx = event.client_x() as f64 - rect.left();
         let my = event.client_y() as f64 - rect.top();
 
-
         //parbauda vai hover uz bar
-        let bar_hit = hit_test_bar(&bars_for_mouse, mx, my, &config_for_mouse);
-        let mut bar_hover_ref = hover_bar_for_mouse.borrow_mut();     
-        if *bar_hover_ref != bar_hit{
-            *bar_hover_ref = bar_hit;
+        let mut st = state_for_mouse.borrow_mut();
+        let bar_hit = st.hit_test_bar(mx, my);
+        if st.hover_bar != bar_hit {
+            st.hover_bar = bar_hit;
+            st.dirty = true;
         }
 
         //parbauda vai hover uz title
-        let title_hit = hit_test_titles(mx, my, &config_for_mouse);
-        let mut title_hover_ref = hover_title_for_mouse.borrow_mut();
-        if *title_hover_ref != title_hit {
-            *title_hover_ref = title_hit;
+        let title_hit = st.hit_test_titles(mx, my);
+        if st.hover_title != title_hit {
+            st.hover_title = title_hit;
+            st.dirty = true;
         }
 
     });
     canvas.add_event_listener_with_callback("mousemove", mouse_closure.as_ref().unchecked_ref())?;
 
     //mousedown listener un handler
-    let canvas_for_click = canvas.clone();
-    let bars_for_click = bars.clone();
-    let config_for_click = config.clone();
-    let running_for_click = running.clone();
-    let value_labels_for_click = value_labels.clone();
-    let key_label_for_click = key_label.clone();
+    let state_for_click = state.clone();
 
     let click_closure = Closure::<dyn FnMut(web_sys::MouseEvent)>::new(move |event: web_sys::MouseEvent| {
-        let rect = canvas_for_click.get_bounding_client_rect();
+        let rect = state_for_click.borrow().canvas.get_bounding_client_rect();
         let mx = event.client_x() as f64 - rect.left();
         let my = event.client_y() as f64 - rect.top();
-        
-        //parbauda vai click uz bar
-        let bar_hit = hit_test_bar(&bars_for_click,  mx, my, &config_for_click);
-        if bar_hit.is_some() {
-            for ( i, bar) in bars_for_click.iter().enumerate() {
-                if Some(i) == bar_hit && bar.sub_points.is_some() {
-                    *running_for_click.borrow_mut() = false;
-
-                    CHART_STACK.with(|stack| {
-                        if let Some(old_handle) = stack.borrow().last() {
-                            old_handle.stop();
-                        }
-                    });
-
-                    if let Ok(new_handle) = render_bar_chart(canvas_for_click.id().as_str(), bar.sub_points.clone().unwrap(), bar.label.clone(), config_for_click.clone(), value_labels_for_click.clone(), key_label_for_click.clone()) {
-                        CHART_STACK.with(|stack| stack.borrow_mut().push(new_handle));
-                    }
-
-                    break;
-                }
-            }
-        }
-
-        //parbauda vai click uz title
-        let title_hit = hit_test_titles(mx, my, &config_for_click);
-        if let Some(i) = title_hit {
-            CHART_STACK.with(|stack| {
-                let mut charts = stack.borrow_mut(); // single mutable borrow, used for everything below
-                *running_for_click.borrow_mut() = false;
-                let points = charts[i].points.clone();
-                let label = charts[i].chart_label.clone();
-
-                while charts.len() > i {
-                    if let Some(old_chart) = charts.pop() {
-                        old_chart.stop();
-                    }
-                }
-                drop(charts);
-                if let Ok(new_handle) = render_bar_chart(canvas_for_click.id().as_str(), points, label,  config_for_click.clone(), value_labels_for_click.clone(), key_label_for_click.clone()) {
-                    CHART_STACK.with(|stack| stack.borrow_mut().push(new_handle));
-                }
-            });
-        }
+        let _ = state_for_click.borrow_mut().on_click(mx, my);
     });
     canvas.add_event_listener_with_callback("click", click_closure.as_ref().unchecked_ref())?;
 
-    //animacijas loop, kas visu laiku(vai ari kad izmainas) zime chart ar atbilstosa frame vertibam
-    let canvas_for_loop = canvas.clone();
-    let config_for_loop =config.clone();
-    let toplines_for_loop=toplines.clone();
-    let bottomlines_for_loop=bottomlines.clone();
-    let bars_for_loop = bars.clone();
-    let anim_for_loop = anim_state.clone();
-    let hover_bar_for_loop = hover_bar.clone();
-    let hover_title_for_loop = hover_title.clone();
-    let running_for_loop = running.clone();
-    let value_labels_for_loop = value_labels.clone();
-    let key_label_for_loop = key_label.clone();
-
-    crate::animation::start_loop(move |_elapsed_ms| {
-        if !*running_for_loop.borrow() {
-            return false;
-        }
-        let now = web_sys::window().unwrap().performance().unwrap().now();
-        let progress = current_progress(&anim_for_loop.borrow(), now);
-        let hover_bar_value = *hover_bar_for_loop.borrow();
-        let hover_title_value = *hover_title_for_loop.borrow();
-        let _ = draw_bar_chart(&canvas_for_loop, &bars_for_loop, &config_for_loop, &toplines_for_loop, &bottomlines_for_loop, barchart.exponent, progress, &hover_bar_value, &hover_title_value, &value_labels_for_loop, &key_label_for_loop, barchart.value_pixels);
+    let weak = Rc::downgrade(&state);
+    crate::animation::start_loop(move |_| {
+        let Some(state) = weak.upgrade() else { return false };
+        let mut st = state.borrow_mut();
+        let now = now_ms();
+        let animating = st.animating(now);
+        if !st.dirty && !animating { return true; }
+        let _ = draw_bar_chart(&st, now);
+        st.dirty = animating;
         true
     })?;
 
-    //izmera cik gars ir title
-    let context = crate::canvas::get_context(&canvas)?;
-    context.set_font(&config.font);
-    let text_w =context.measure_text(&chart_label)?.width();
-
-    Ok(BarChartHandle { canvas, running, mouse_closure, click_closure, chart_label, text_w, points })
-}
-
-pub fn current_progress(anim: &BarAnimState, now_ms: f64)->f64{
-    let elapsed = now_ms - anim.start_time;
-    let t = (elapsed / 500.0).clamp(0.0, 1.0);
-    anim.start + (anim.target - anim.start) * t
-}
-pub struct BarAnimState{
-    start:f64,
-    target:f64,
-    start_time: f64,
+    Ok(BarChartController {state, mouse: mouse_closure, click: click_closure})
 }

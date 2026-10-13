@@ -22,7 +22,7 @@ pub fn extract_points(table: &table::Table, config: &impl Points) -> Vec<DataPoi
         .enumerate()
         .map(|(row_index, _row)|DataPoint { 
             label: table::cell_as_string(table, row_index, label_col),
-            value: table::value(table, row_index, value_col.clone()),
+            value: table::value(table, row_index, value_col),
             sub_points: if value_col.len() > 1 {
                 Some(value_col.iter().map(|&col_index| DataPoint {
                     label: table.columns[col_index].clone(),
