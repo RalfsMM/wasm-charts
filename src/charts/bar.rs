@@ -57,11 +57,8 @@ impl ChartState{
         self.hover_bar=None;
         self.hover_title=None;
         let current_level = self.history.last().unwrap();
-        if self.config.vert{
-            self.layout = compute_vertical_bars(current_level.points.clone(), &self.config).unwrap();
-        }else{
-            self.layout = compute_horizontal_bars(current_level.points.clone(), &self.config).unwrap();
-        }
+        self.layout = compute_bars(current_level.points.clone(), &self.config);
+
         self.anim_start = now_ms();
         self.dirty = true;
         Ok(())
@@ -156,7 +153,9 @@ pub struct BarConfig {
     pub font_size: f64,
     pub font: String,
     pub text_color: String,
-    pub step_fraction: f64,//nosaka cik biezi iedalas. 1.0, katras 10 mervienibas, 0.5 katras 5, 0.1 katru mervienibu. Var ari jebkadus skaitlus bet sitie ir standarts.
+    pub hover_color: String,
+    pub bar_color: String,
+    pub line_color: String
 }
 //Traits taa lai parsingaa var izmantot visu chartu configus
 impl Points for BarConfig {
@@ -171,7 +170,7 @@ impl Points for BarConfig {
 //Noklusejuma vertibas, pirma kollona key, otra value
 impl Default for BarConfig {
     fn default() -> Self {
-        BarConfig { label_column: 0, value_column: vec![1], vert: true, sort_asc: false, sort_desc: false, sub_color: true, sub_stack:true, start_x:50.0, start_y:50.0, height: 300.0, width: 400.0,  font_size: 10.0, font: String::from("10px sans-serif"), text_color: String::from("black"), step_fraction: 1.0}
+        BarConfig { label_column: 0, value_column: vec![1], vert: true, sort_asc: false, sort_desc: false, sub_color: true, sub_stack:true, start_x:50.0, start_y:50.0, height: 300.0, width: 400.0,  font_size: 10.0, font: String::from("10px sans-serif"), text_color: String::from("black"), hover_color: String::from("red"),bar_color: String::from("black"),line_color: String::from("gray")}
     }
 }
 
@@ -193,9 +192,6 @@ impl BarConfig {
         }
         if self.width <= 0.0 || self.height <= 0.0 {
             return err("width and height must be positive");
-        }
-        if self.step_fraction <= 0.0{
-            return err("fraction must be positive");
         }
         Ok(())
     }
@@ -235,7 +231,7 @@ fn now_ms() -> f64 {
         .unwrap_or(0.0)
 }
 
-pub fn compute_vertical_bars( mut points: Vec<DataPoint>, config: &BarConfig) -> Result<BarChart, JsValue>{
+pub fn compute_bars( mut points: Vec<DataPoint>, config: &BarConfig) -> BarChart{
     if config.sort_asc{
         points.sort_by(|a, b| a.value.total_cmp(&b.value));
     }
@@ -243,7 +239,6 @@ pub fn compute_vertical_bars( mut points: Vec<DataPoint>, config: &BarConfig) ->
         points.sort_by(|a, b| b.value.total_cmp(&a.value));
     }
 
-    let mut total_value=0.0;
     let mut max_value = 0.0;
     let mut min_value =0.0;
     points.iter().for_each(|point| {
@@ -257,7 +252,6 @@ pub fn compute_vertical_bars( mut points: Vec<DataPoint>, config: &BarConfig) ->
                 }
             });
         }
-        total_value+=point.value;
         if point.value<min_value{
             min_value=point.value;
         }
@@ -267,27 +261,30 @@ pub fn compute_vertical_bars( mut points: Vec<DataPoint>, config: &BarConfig) ->
     });
 
     let point_count = points.len() as f64;
+    let max_abs_value=max_value.abs().max(min_value.abs());
     
-    // let avg=
-    // if min_value==0.0 && max_value==0.0{
-    //     1.0
-    // }else{
-    //     total_value/point_count
-    // };
-    // let exponent = avg.abs().log10().floor();
 
-    //kada desmit pakape ir average zinatniska pierakstaa skaitlim no datiem
-    let exponent = if min_value==0.0 && max_value==0.0{
+    //kada desmit pakape ir lielakajam zinatniska pierakstaa skaitla modulim no datiem
+    let exponent = if max_abs_value==0.0{
         1.0
-    }else if max_value.abs()>min_value.abs(){
-        max_value.abs().log10().floor()
     }else{
-        min_value.abs().log10().floor()
+        max_abs_value.abs().log10().floor()
     };
 
+    let step_fract= max_abs_value/10.0_f64.powf(exponent+1.0);
 
-    //cik mervienibas viena iedala, aprekina ar configa dalskaitli un 10 exponent pakaapee
-    let step = config.step_fraction * 10.0_f64.powf(exponent);
+    let step =
+    if step_fract<0.15 {
+        0.1*10.0_f64.powf(exponent)
+    }else if step_fract<0.5{
+        0.20*10.0_f64.powf(exponent)
+    }else if step_fract<0.75{
+        0.5*10.0_f64.powf(exponent)
+    }else{
+        1.0*10.0_f64.powf(exponent)
+    };
+    
+
     //cik iedalas bus charta uz pozitivo virzienu
     let step_amount_pos =(max_value/step).ceil()+2.0;
     //cik iedalas bus charta uz negativo virzienu
@@ -297,168 +294,77 @@ pub fn compute_vertical_bars( mut points: Vec<DataPoint>, config: &BarConfig) ->
     }else{
         0.0
     };
+
     //iedalu linijas atstarpes
-    let step_line_px=config.height/(step_amount_pos+ step_amount_neg);
+    let step_line_px=
+        if config.vert{
+            config.height/(step_amount_pos+ step_amount_neg)
+        }else{
+            config.width/(step_amount_pos+ step_amount_neg)
+        };
 
     //cik pikseli ir viena datu mervieniba
     let one_px=step_line_px/step;
 
-    let start_y=
-    if min_value==0.0{
-        config.start_y+config.height
+    let start=
+    if config.vert{
+        if min_value==0.0{
+            config.start_y+config.height
+        }else{
+            config.start_y+config.height-step_amount_neg*step_line_px
+        }
     }else{
-        config.start_y+config.height-step_amount_neg*step_line_px
+        if min_value==0.0{
+            config.start_x
+        }else{
+            config.start_x + step_amount_neg*step_line_px
+        }
     };
 
     
     let bars:Vec<Bar> = points.into_iter().enumerate().map(|(i, p)|{
-            let part = config.width/point_count;
+            let part = if config.vert{
+                config.width/point_count
+            }else{
+                config.height/point_count
+            };
             let thickness= 0.6*part;
             let length= one_px*p.value;
             let x =(i as f64 )* part + part*0.2+ config.start_x;
-            let sub_points = if p.sub_points.is_some() && !p.sub_points.as_ref().unwrap().is_empty() {
-                p.sub_points
-            } else {
-                None
-            };
-
-            Bar{label: p.label, value: p.value, thickness, length, start_x: x, start_y, sub_points, part}
-        })
-        .collect();
-    let mut bottom_lines=vec![];
-    let mut top_lines=vec![];
-    let mut i=0.0;
-    while i<=step_amount_pos{
-        let line_y=start_y-i*step_line_px;
-        let line_val = step*i;
-        top_lines.push(line_y);
-        top_lines.push(line_val);
-        i+=1.0;
-    }
-    i=1.0;
-    while i<=step_amount_neg{
-        let line_y=start_y+i*step_line_px;
-        let line_val = -step*i;
-        bottom_lines.push(line_y);
-        bottom_lines.push(line_val);
-        i+=1.0;
-    }
-
-    let res= BarChart {bars, bottom_lines, top_lines, exponent, value_pixels: one_px};
-    Ok(res)
-}
-
-pub fn compute_horizontal_bars(mut points: Vec<DataPoint>, config: &BarConfig) -> Result<BarChart, JsValue>{
-    if config.sort_asc{
-        points.sort_by(|a, b| a.value.total_cmp(&b.value));
-    }    
-    if config.sort_desc{
-        points.sort_by(|a, b| b.value.total_cmp(&a.value));
-    }
-    let mut total_value=0.0;
-    let mut max_value = 0.0;
-    let mut min_value =0.0;
-    points.iter().for_each(|point| {
-        if let Some(subpoints)=&point.sub_points{
-            subpoints.iter().for_each(|p| {
-                if p.value<min_value{
-                    min_value=p.value;
-                }
-                if p.value>max_value{
-                    max_value=p.value;
-                }
-            });
-        }
-        total_value+=point.value;
-        if point.value<min_value{
-            min_value=point.value;
-        }
-        if point.value>max_value{
-            max_value=point.value;
-        }
-    });
-    let point_count = points.len() as f64;
-    // let avg=
-    // if min_value==0.0 && max_value==0.0{
-    //     1.0
-    // }else{
-    //     total_value/point_count
-    // };
-    //let exponent = avg.abs().log10().floor();
-
-    //kada desmit pakape ir average zinatniska pierakstaa skaitlim no datiem
-    let exponent = if min_value==0.0 && max_value==0.0{
-        1.0
-    }else if max_value.abs()>min_value.abs(){
-        max_value.abs().log10().floor()
-    }else{
-        min_value.abs().log10().floor()
-    };
-
-
-
-    //cik mervienibas viena iedala, aprekina ar configa dalskaitli un 10 exponent pakaapee
-    let step = config.step_fraction * 10.0_f64.powf(exponent);
-    //cik iedalas bus charta uz pozitivo virzienu
-    let step_amount_pos =(max_value/step).ceil()+2.0;
-    //cik iedalas bus charta uz negativo virzienu
-    let step_amount_neg=
-    if min_value != 0.0 {
-        (min_value.abs()/step).ceil()
-    }else{
-        0.0
-    };
-    //iedalu linijas atstarpes
-    let step_line_px=config.width/(step_amount_pos+ step_amount_neg);
-
-    //cik pikseli ir viena datu mervieniba
-    let one_px=step_line_px/step;
-
-    
-    let start_x=
-    if min_value==0.0{
-        config.start_x
-    }else{
-        config.start_x + step_amount_neg*step_line_px
-    };
-
-    
-    let bars:Vec<Bar> = points.into_iter().enumerate().map(|(i, p)|{
-            let part = config.height/point_count;
-            let thickness= 0.6*part;
-            let length= one_px*p.value;
             let y =(i as f64 )* part + part*0.2+ config.start_y;
+
             let sub_points = if p.sub_points.is_some() && !p.sub_points.as_ref().unwrap().is_empty() {
                 p.sub_points
             } else {
                 None
             };
-
-
-            Bar{label: p.label, value: p.value, thickness, length, start_x, start_y: y, sub_points, part}
+            if config.vert{
+                Bar{label: p.label, value: p.value, thickness, length, start_x: x, start_y: start, sub_points, part}
+            }else{
+                Bar{label: p.label, value: p.value, thickness, length, start_x: start, start_y: y, sub_points, part}
+            }
         })
         .collect();
     let mut bottom_lines=vec![];
     let mut top_lines=vec![];
+    let k=if config.vert{-1.0}else{1.0};
     let mut i=0.0;
     while i<=step_amount_pos{
-        let line_x=start_x+i*step_line_px;
+        let line=start+k*i*step_line_px;
         let line_val = step*i;
-        top_lines.push(line_x);
+        top_lines.push(line);
         top_lines.push(line_val);
         i+=1.0;
     }
     i=1.0;
     while i<=step_amount_neg{
-        let line_x=start_x-i*step_line_px;
+        let line=start-k*i*step_line_px;
         let line_val = -step*i;
-        bottom_lines.push(line_x);
+        bottom_lines.push(line);
         bottom_lines.push(line_val);
         i+=1.0;
     }
-
-    let res= BarChart {bars,bottom_lines,top_lines, exponent, value_pixels:one_px};
-    Ok(res)
+    BarChart {bars, bottom_lines, top_lines, exponent, value_pixels: one_px}
 }
 
 fn draw_bar_chart( state:&ChartState, now: f64 )->Result<(), JsValue>{
@@ -481,6 +387,9 @@ fn draw_bar_chart( state:&ChartState, now: f64 )->Result<(), JsValue>{
     let font_size = geo.font_size;
     let font=geo.font.as_str();
     let text_color =geo.text_color.as_str();
+    let hover_color= geo.hover_color.as_str();
+    let bar_color = geo.bar_color.as_str();
+    let line_color=geo.line_color.as_str();
     let all_val_lab= value_labels.join("  ");
 
 
@@ -493,7 +402,7 @@ fn draw_bar_chart( state:&ChartState, now: f64 )->Result<(), JsValue>{
     let mut indent= 0.0;
     for (i, chart) in charts.iter().enumerate() {
         if title_hover == Some(i) {
-            context.set_fill_style_str("red");
+            context.set_fill_style_str(hover_color);
         } else {
             context.set_fill_style_str(text_color);
         }
@@ -510,9 +419,9 @@ fn draw_bar_chart( state:&ChartState, now: f64 )->Result<(), JsValue>{
             .map_err(|_| JsValue::from_str("failed to draw chart label"))?;
     }
     context.set_fill_style_str(text_color);
+    context.set_text_align("left");
 
     if geo.vert{
-        context.set_text_align("left");
         context.set_text_baseline("bottom");
         context.fill_text(&all_val_lab, geo.start_x, geo.start_y-font_size)?;
         context.fill_text(key_label, geo.start_x+geo.width, geo.start_y+geo.height)?;
@@ -528,18 +437,20 @@ fn draw_bar_chart( state:&ChartState, now: f64 )->Result<(), JsValue>{
         }
 
         context.begin_path();
-        context.set_fill_style_str("gray");
+        context.set_fill_style_str(line_color);
         context.set_text_baseline("middle");
         context.set_text_align("right");
         context.set_line_width(0.5);
 
-        let mut i =2;
+        let mut i =0;
         while i<top_lines.len(){
             context.move_to(geo.start_x, top_lines[i]);
             context.line_to(geo.start_x+geo.width, top_lines[i]);
             let exp=
             if exponent>0.0{
                 0
+            }else if exponent ==0.0{
+                1
             }else{
                 -exponent as usize
             };
@@ -554,6 +465,8 @@ fn draw_bar_chart( state:&ChartState, now: f64 )->Result<(), JsValue>{
             let exp=
             if exponent>0.0{
                 0
+            }else if exponent ==0.0{
+                1
             }else{
                 -exponent as usize
             };
@@ -562,11 +475,11 @@ fn draw_bar_chart( state:&ChartState, now: f64 )->Result<(), JsValue>{
             i+=2;
         }
         context.stroke();
-        context.set_fill_style_str("black");
+        context.set_fill_style_str(bar_color);
 
         for (i, bar) in bars.iter().enumerate(){
             if bar_hover==Some(i){
-                context.set_fill_style_str("red");
+                context.set_fill_style_str(hover_color);
                 context.set_global_alpha(0.1);
                 context.fill_rect(bar.start_x-bar.part*0.2, geo.start_y, bar.part, geo.height);
                 context.set_global_alpha(1.0);
@@ -616,7 +529,7 @@ fn draw_bar_chart( state:&ChartState, now: f64 )->Result<(), JsValue>{
                     }
                     context.fill_rect(bar.start_x, bar.start_y, bar.thickness, -progress*bar.length);
                 }
-                context.set_fill_style_str("black");
+                context.set_fill_style_str(text_color);
             }
 
             
@@ -628,6 +541,7 @@ fn draw_bar_chart( state:&ChartState, now: f64 )->Result<(), JsValue>{
             // }
             // context.set_text_align("middle");
             // context.fill_text(&value, bar.start_x+bar.width/1.2, bar.start_y -lengths[i])?;
+
             context.save();
             context.translate(bar.start_x+(bar.thickness/2.0), geo.start_y + geo.height + 0.3*geo.font_size)?;// move origin to where the text should be
             context.rotate(-std::f64::consts::PI / 2.0)?;
@@ -635,20 +549,10 @@ fn draw_bar_chart( state:&ChartState, now: f64 )->Result<(), JsValue>{
             context.set_text_baseline("middle");
             context.fill_text(&bar.label, 0.0, 0.0)?;
             context.restore();
-            context.set_fill_style_str("black");
+            context.set_fill_style_str(bar_color);
         }
 
-        context.begin_path();
-        context.set_line_width(1.0);
-        context.set_text_baseline("middle");
-        context.set_text_align("right");
-        context.move_to(geo.start_x, top_lines[0]);
-        context.line_to(geo.start_x+geo.width, top_lines[0]);
-        context.fill_text("0  ", geo.start_x, top_lines[0])?;
-        context.stroke();
-
     }else{
-        context.set_text_align("left");
         context.set_text_baseline("top");
         context.fill_text(key_label, geo.start_x, geo.start_y+geo.height)?;
 
@@ -664,25 +568,27 @@ fn draw_bar_chart( state:&ChartState, now: f64 )->Result<(), JsValue>{
         }
             
         context.begin_path();
-        context.set_fill_style_str("gray");
+        context.set_fill_style_str(line_color);
         context.set_text_baseline("bottom");
         context.set_text_align("center");
         context.set_line_width(0.5);
 
-        let mut i =2;
+        let mut i =0;
         while i<top_lines.len(){
             context.move_to( top_lines[i],geo.start_y);
             context.line_to(top_lines[i], geo.start_y+geo.height);
             let exp=
             if exponent>0.0{
                 0
+            }else if exponent ==0.0{
+                1
             }else{
                 -exponent as usize
             };
-            let label=format!("{:.exp$}",top_lines[i+1]);
+            let label=format!("{:.exp$} ",top_lines[i+1]);
 
             context.save();
-            context.translate(top_lines[i], geo.start_y- geo.font_size*0.3)?;// move origin to where the text should be
+            context.translate(top_lines[i], geo.start_y)?;
             context.rotate(std::f64::consts::PI / 2.0)?;
             context.set_text_align("right");
             context.set_text_baseline("middle");
@@ -698,13 +604,15 @@ fn draw_bar_chart( state:&ChartState, now: f64 )->Result<(), JsValue>{
             let exp=
             if exponent>0.0{
                 0
+            }else if exponent ==0.0{
+                1    
             }else{
                 -exponent as usize
             };
-            let label=format!("{:.exp$}",bottom_lines[i+1]);
+            let label=format!("{:.exp$} ",bottom_lines[i+1]);
 
             context.save();
-            context.translate(bottom_lines[i], geo.start_y- geo.font_size*0.3)?;// move origin to where the text should be
+            context.translate(bottom_lines[i], geo.start_y)?;
             context.rotate(std::f64::consts::PI / 2.0)?;
             context.set_text_align("right");
             context.set_text_baseline("middle");
@@ -717,7 +625,7 @@ fn draw_bar_chart( state:&ChartState, now: f64 )->Result<(), JsValue>{
         context.set_fill_style_str(text_color);
         for (i, bar) in bars.iter().enumerate(){
             if bar_hover==Some(i){
-                context.set_fill_style_str("red");
+                context.set_fill_style_str(hover_color);
                 context.set_global_alpha(0.1);
                 context.fill_rect(geo.start_x,bar.start_y-bar.part*0.2, geo.width, bar.part);
                 context.set_global_alpha(1.0);
@@ -765,38 +673,20 @@ fn draw_bar_chart( state:&ChartState, now: f64 )->Result<(), JsValue>{
                     }
                     context.fill_rect(bar.start_x, bar.start_y, progress*bar.length, bar.thickness);
                 }
-                context.set_fill_style_str("black");
+                context.set_fill_style_str(text_color);
             }
             context.set_text_align("right");
             context.set_text_baseline("middle");
             context.fill_text(&bar.label, geo.start_x-geo.font_size*0.3, bar.start_y+(bar.thickness/2.0))?;
-            context.set_fill_style_str("black");
+            context.set_fill_style_str(bar_color);
         }
-        context.begin_path();
-        context.set_line_width(1.0);
-        context.move_to( top_lines[0], geo.start_y);
-        context.line_to( top_lines[0],geo.start_y+geo.height);
-        context.stroke();
-        context.save();
-        context.translate(top_lines[0], geo.start_y- geo.font_size*0.3)?;// move origin to where the text should be
-        context.rotate(std::f64::consts::PI / 2.0)?;
-        context.set_text_align("right");
-        context.set_text_baseline("middle");
-        context.fill_text("0", 0.0, 0.0)?;
-        context.restore();
 
     }           
     Ok(())
 }
 
-pub fn render_bar_chart(canvas_id: &str, points: Vec<DataPoint>, chart_label: String, conf: BarConfig, value_labels: Vec<String>, key_label: String) -> Result<BarChartController, JsValue> {
-    let config=conf;
-    let barchart=
-    if config.vert{
-        compute_vertical_bars(points.clone(), &config)?
-    }else{
-        compute_horizontal_bars(points.clone(), &config)?
-    };
+pub fn render_bar_chart(canvas_id: &str, points: Vec<DataPoint>, chart_label: String, config: BarConfig, value_labels: Vec<String>, key_label: String) -> Result<BarChartController, JsValue> {
+    let barchart=compute_bars(points.clone(), &config);
     let canvas=crate::canvas::get_canvas(canvas_id)?;
     let context=crate::canvas::get_context(&canvas)?;
     context.set_font(&config.font);

@@ -6,12 +6,13 @@
     <title>WASM Charts</title>
 </head>
 <body>
-    <canvas id="myCanvas3" width="600" height="400" style="border:1px solid #000000;"></canvas>
-    <canvas id="myCanvas4" width="600" height="400" style="border:1px solid #000000;"></canvas>
+    <canvas id="myCanvas5" width="600" height="450" style="border:1px solid #000000;"></canvas>
     <canvas id="myCanvas1" width="600" height="450" style="border:1px solid #000000;"></canvas>
     <canvas id="myCanvas2" width="600" height="450" style="border:1px solid #000000;"></canvas>
+    <canvas id="myCanvas3" width="600" height="450" style="border:1px solid #000000;"></canvas>
+    <canvas id="myCanvas4" width="600" height="450" style="border:1px solid #000000;"></canvas>
     <script type="module">
-        import init, { render_pie_chart, render_bar_chart } from './pkg/wasm_charts.js';
+        import init, { render_pie_chart, render_bar_chart, render_time_chart } from './pkg/wasm_charts.js';
 
         const barconfig1 = {
             label_column: 0,
@@ -28,25 +29,29 @@
             font_size: 10.0,
             font: "10px sans-serif",
             text_color: "black",
-            step_fraction: 0.5
+            hover_color: "red",
+            bar_color: "black",
+            line_color: "gray"
         }
 
         const barconfig2 = {
             label_column: 0,
-            value_column: [1, 2],
-            vert: false,
+            value_column: [1],
+            vert:false,
             sort_asc: false,
             sort_desc: false,
-            sub_color: true,
-            sub_stack: false,
-            start_x:50.0,
-            start_y:50.0,
+            sub_color: false,
+            sub_stack: true,
+            start_x:80.0,
+            start_y:80.0,
             height: 300.0,
             width: 400.0, 
             font_size: 10.0,
             font: "10px sans-serif",
             text_color: "black",
-            step_fraction: 0.5
+            hover_color: "red",
+            bar_color: "black",
+            line_color: "gray"
         }
 
         const pieconfig1 = {
@@ -80,6 +85,32 @@
             hover_title_color: "blue",
             entrance_dur: 500.0,
         }
+
+        const data = {
+            columns: ["Key", "Value1"],
+            rows: [
+                ["Apple", 0.0220],
+                ["Banana", 0.0100],
+                ["Cherry", 0.0400],
+                ["Date", 0.0100],
+                ["Elderberry", 0.0800],
+                ["Fig", -0.009],
+                ["Grape",0.0800],
+                ["Hamburger", 0.0450],
+                ["Icecream", -0.0300],
+                ["Jelly", 0.0100],
+                ["Kiwi", 0.0360],
+                ["Lemon", 0.0400],
+                ["Mango", 0.0360],
+                ["Nectarine", -0.0430],
+                ["Orange", 0.0320],
+                ["Papaya", -0.007],
+                ["Quince", 0.0330],
+                ["Raspberry", 0.0570],
+                ["Strawberry", 0.0480],
+                ["Tomato", 0.0500]
+            ]
+        };
 
         const data1 = {
             columns: ["Key", "Value1", "Value2", "Value3"],
@@ -167,12 +198,53 @@
             ]
         };
         
+        const timeconfig={
+            label_column: 0,
+            value_column: [1,2,3],
+            interval_start:Date.parse("2026-10-20T13:00:00Z"),
+            interval_end:Date.parse("2026-10-20T14:00:00Z"),
+            time_step:10*60*1000,
+            sub_color: true,
+            sub_stack:true,
+            start_x:50.0,
+            start_y:50.0,
+            height: 300.0,
+            width: 400.0,
+            font_size: 10.0,
+            font:"10px sans-serif",
+            text_color: "black",
+            hover_color:"red",
+            bar_color:"black",
+            line_color:"gray",
+            time_zone:"Europe/Riga"
+        }
+
+
+        const data6 = {
+            columns: ["Datetime", "Value1", "Value2", "Value3"],
+            rows: [
+                ["2026-10-20T15:55:00", 100, 100, 100], // before interval_start → ignored
+                ["2026-10-20T16:00:00", 1, 2, 3],       // exactly on start boundary
+                ["2026-10-20T16:10:00", 10, 20, 30],    // exactly on bucket boundary
+                ["2026-10-20T16:04:30", 4, 5, 6],       // out of order
+                ["2026-10-20T16:09:59", 1, 1, 1],       // last second of bucket 0
+                ["2026-10-20T16:15:00", 2, 2, 2],
+                // 16:20–16:30 intentionally empty
+                ["2026-10-20T16:35:00", 3, 3, 3],
+                ["2026-10-20T16:30:00", 5, 0, -5],      // negative value
+                ["2026-10-20T16:41:12", 7, 8, 9],
+                ["2026-10-20T16:59:59", 1, 1, 1],
+                ["2026-10-20T16:52:00", 1, 2, 3],
+                ["2026-10-20T17:00:00", 50, 50, 50]     // == interval_end → ignored
+            ]
+        };
         
         await init();
         render_pie_chart('myCanvas3', data2, pieconfig1);
         render_pie_chart('myCanvas4', data3, pieconfig2);
         render_bar_chart('myCanvas1', data1, barconfig1);
-        render_bar_chart('myCanvas2', data4, barconfig2);
+        render_bar_chart('myCanvas2', data, barconfig2);
+        render_time_chart('myCanvas5', data6, timeconfig);
     </script>
 </body>
 </html>
