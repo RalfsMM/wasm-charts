@@ -25,6 +25,7 @@ features = [
   "MouseEvent",
   "EventTarget",
   "TextMetrics",
+  "console",
 ]
 
 [profile.release]

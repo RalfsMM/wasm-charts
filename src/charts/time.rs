@@ -5,6 +5,8 @@ use std::rc::Rc;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use jiff::civil::DateTime;
+use jiff::Timestamp;
+use web_sys::console;
 
 thread_local! {
     static CHARTS: RefCell<HashMap<String, TimeChartController>> = RefCell::new(HashMap::new());
@@ -22,7 +24,7 @@ pub struct TimeChartController {
     click: Closure<dyn FnMut(web_sys::MouseEvent)>
 }
 
-struct Level { label: String, text_w: f64, interval_start: i64, interval_end: i64, time_step:i64 }
+struct Level { label: String, text_w: f64, interval_start: i64, interval_end: i64, time_step:String }
 
 struct ChartState {
     canvas: web_sys::HtmlCanvasElement,
@@ -128,7 +130,7 @@ pub struct TimeConfig {
     pub value_column: Vec<usize>,
     pub interval_start: i64, //no kada laika
     pub interval_end: i64, //lidz kuram laikam
-    pub time_step: i64, //uz kādu laika posmu ir viens bar
+    pub time_step: String, //uz kādu laika posmu ir viens bar
     pub sub_color:bool,
     pub sub_stack:bool,
     pub start_x: f64,
@@ -156,7 +158,7 @@ impl Points for TimeConfig {
 //Noklusejuma vertibas, pirma kollona key, otra value
 impl Default for TimeConfig {
     fn default() -> Self {
-        TimeConfig { label_column: 0, value_column: vec![1], interval_start:0, interval_end:0,time_step:0, sub_color: true, sub_stack:true, start_x:50.0, start_y:50.0, height: 300.0, width: 400.0,  font_size: 10.0, font: String::from("10px sans-serif"), text_color: String::from("black"), hover_color: String::from("red"),bar_color: String::from("black"),line_color: String::from("gray"), time_zone:String::from("Europe/Riga")}
+        TimeConfig { label_column: 0, value_column: vec![1], interval_start:0, interval_end:0,time_step:String::from("d"), sub_color: true, sub_stack:true, start_x:50.0, start_y:50.0, height: 300.0, width: 400.0,  font_size: 10.0, font: String::from("10px sans-serif"), text_color: String::from("black"), hover_color: String::from("red"),bar_color: String::from("black"),line_color: String::from("gray"), time_zone:String::from("Europe/Riga")}
     }
 }
 
@@ -179,15 +181,12 @@ impl TimeConfig {
         if self.interval_end <= self.interval_start {
             return err("interval_end must be greater than interval_start");
         }
-        if self.time_step <= 0 {
-            return err("time_step must be positive");
-        }
         Ok(())
     }
 }
 
 pub struct Bar{
-    pub label: String,
+    pub time: i64,
     pub values: Vec<f64>,
     pub thickness: f64,
     pub length: f64,
@@ -207,44 +206,113 @@ pub struct TimeChart{
     pub value_pixels: f64,
 }
 
+fn to_unix_ms(s: &str) -> Result<i64, jiff::Error> {
+    let ts: Timestamp = s.parse()?;
+    Ok(ts.as_millisecond())
+}
+
 fn local_to_unix_ms(s: &str, tz: &str) -> Result<i64, jiff::Error> {
     let dt: DateTime = s.parse()?;
     Ok(dt.in_tz(tz)?.timestamp().as_millisecond())
 }
 
-pub fn compute_bars(data_points: &[DataPoint], config: &TimeConfig, interval_start:i64, interval_end:i64, time_step:i64)->Result<TimeChart, JsValue>{
+fn now_ms() -> f64 {
+    web_sys::window()
+        .and_then(|w| w.performance())
+        .map(|p| p.now())
+        .unwrap_or(0.0)
+}
+
+fn palette_color(index: usize) -> &'static str {
+    let colors = [
+        "#FFCE56", "#4BC0C0", "#9966FF","#FF6384", "#36A2EB",
+        "#FF9F40", "#E7E9ED", "#76B041", "#F7464A", "#46BFBD",
+    ];
+    colors[index % colors.len()]
+}
+
+pub fn compute_bars(data_points: &[DataPoint], config: &TimeConfig, interval_start:i64, interval_end:i64, time_step_string:&str)->Result<TimeChart, JsValue>{
+    let time_step=match time_step_string{
+        "1min"=>60*1000,
+        "5min"=>5*60*1000,
+        "10min"=>10*60*1000,
+        "15min"=>15*60*1000,
+        "30min"=>30*60*1000,
+        "1h"=>60*60*1000,
+        "5h"=>5*60*60*1000,
+        "12h"=>12*60*60*1000,
+        "d"=>24*60*60*1000,
+        "w"=>7*24*60*60*1000,
+        "m"=>30*24*60*60*1000,
+        "y"=>12*30*24*60*60*1000,
+        _=>0,
+    };
     if interval_end <= interval_start {
         return Err(JsValue::from_str("interval_end must be greater than interval_start"));
     }
     if time_step <= 0 {
         return Err(JsValue::from_str("time_step must be positive"));
     }
+    
     let duration = interval_end
         .checked_sub(interval_start)
         .ok_or_else(|| JsValue::from_str("time interval is too large"))?;
 
-    let bucket_count = duration / time_step + i64::from(duration % time_step != 0);
+    let mut buckets;
 
-    let bucket_count = usize::try_from(bucket_count)
-        .map_err(|_| JsValue::from_str("time interval contains too many buckets"))?;
-    
-    let series_count = data_points
-        .iter()
-        .filter_map(|p| p.sub_points.as_ref().map(|s| s.len()))
-        .max()
-        .unwrap_or(0);
 
-    let mut buckets = vec![vec![0.0; series_count]; bucket_count];
+    if time_step>=30*24*60*60*1000{
+        //seit jamaina
+        let bucket_count = duration / time_step;
+        let interval_end_rounded= interval_end-(duration % time_step);
 
-    for p in data_points {
-        let Some(subs) = p.sub_points.as_ref() else { continue };
-        let Ok(time) = local_to_unix_ms(&p.label, &config.time_zone) else { continue };
-        if time < interval_start || time >= interval_end {
-            continue;
+        let bucket_count = usize::try_from(bucket_count)
+            .map_err(|_| JsValue::from_str("time interval contains too many buckets"))?;
+        
+        let series_count = data_points
+            .iter()
+            .filter_map(|p| p.sub_points.as_ref().map(|s| s.len()))
+            .max()
+            .unwrap_or(0);
+
+        buckets = vec![vec![0.0; series_count]; bucket_count];
+
+        for p in data_points {
+            let Some(subs) = p.sub_points.as_ref() else { continue };
+            let Ok(time) = to_unix_ms(&p.label) else { continue };
+            if time < interval_start || time >= interval_end_rounded {
+                continue;
+            }
+            let idx = ((time - interval_start) / time_step) as usize;
+            for (acc, s) in buckets[idx].iter_mut().zip(subs) {
+                *acc += s.value;
+            }
         }
-        let idx = ((time - interval_start) / time_step) as usize;
-        for (acc, s) in buckets[idx].iter_mut().zip(subs) {
-            *acc += s.value;
+    }else{
+        let bucket_count = duration / time_step;//rāda tikai visus veselos steps intervālā. Piemeram ja intervals ir 27 min un step ir 5 min, bus 5 buckets un atlikusas 2 min cutoff
+        let interval_end_rounded= interval_end-(duration % time_step);
+
+        let bucket_count = usize::try_from(bucket_count)
+            .map_err(|_| JsValue::from_str("time interval contains too many buckets"))?;
+        
+        let series_count = data_points
+            .iter()
+            .filter_map(|p| p.sub_points.as_ref().map(|s| s.len()))
+            .max()
+            .unwrap_or(0);
+
+        buckets = vec![vec![0.0; series_count]; bucket_count];
+
+        for p in data_points {
+            let Some(subs) = p.sub_points.as_ref() else { continue };
+            let Ok(time) = to_unix_ms(&p.label) else { continue };
+            if time < interval_start || time >= interval_end_rounded {
+                continue;
+            }
+            let idx = ((time - interval_start) / time_step) as usize;
+            for (acc, s) in buckets[idx].iter_mut().zip(subs) {
+                *acc += s.value;
+            }
         }
     }
 
@@ -255,15 +323,17 @@ pub fn compute_bars(data_points: &[DataPoint], config: &TimeConfig, interval_sta
         .into_iter()
         .enumerate()
         .map(|(i, values)|{
-            let sum=values.iter().sum::<f64>();
+            if config.sub_stack{
+                let sum=values.iter().sum::<f64>();
+                if sum>max_value{
+                    max_value=sum;
+                }
+                if sum<min_value{
+                    min_value=sum;
+                }
+            }
             let min =values.iter().fold(f64::INFINITY, |a, &b| a.min(b));
-            let max =values.iter().fold(f64::INFINITY, |a, &b| a.max(b));
-            if sum>max_value{
-                max_value=sum;
-            }
-            if sum<min_value{
-                min_value=sum;
-            }
+            let max =values.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
             if max>max_value{
                 max_value=max;
             }            
@@ -303,7 +373,7 @@ pub fn compute_bars(data_points: &[DataPoint], config: &TimeConfig, interval_sta
     //cik iedalas bus charta uz negativo virzienu
     let step_amount_neg=
     if min_value != 0.0 {
-        (min_value.abs()/step).ceil()
+        (min_value.abs()/step).ceil()+1.0
     }else{
         0.0
     };
@@ -328,9 +398,7 @@ pub fn compute_bars(data_points: &[DataPoint], config: &TimeConfig, interval_sta
             let length= one_px*p.values.iter().sum::<f64>();
             let x =(i as f64 )*thickness+ config.start_x;
 
-            let label=p.time.to_string();
-
-            Bar{label: label, values: p.values, thickness, length, start_x: x, start_y: start_y}
+            Bar{time: p.time, values: p.values, thickness, length, start_x: x, start_y}
 
         })
         .collect();
@@ -354,21 +422,6 @@ pub fn compute_bars(data_points: &[DataPoint], config: &TimeConfig, interval_sta
         i+=1.0;
     }
     Ok(TimeChart {bars, bottom_lines, top_lines, exponent, value_pixels: one_px})
-}
-
-fn now_ms() -> f64 {
-    web_sys::window()
-        .and_then(|w| w.performance())
-        .map(|p| p.now())
-        .unwrap_or(0.0)
-}
-
-fn palette_color(index: usize) -> &'static str {
-    let colors = [
-        "#FFCE56", "#4BC0C0", "#9966FF","#FF6384", "#36A2EB",
-        "#FF9F40", "#E7E9ED", "#76B041", "#F7464A", "#46BFBD",
-    ];
-    colors[index % colors.len()]
 }
 
 fn draw_time_chart(state:&ChartState)->Result<(),JsValue>{
@@ -429,7 +482,7 @@ fn draw_time_chart(state:&ChartState)->Result<(),JsValue>{
     context.fill_text(key_label, geo.start_x+geo.width, geo.start_y+geo.height)?;
     context.set_text_baseline("top");
 
-    if geo.sub_color && value_labels.len()>1{
+    if geo.sub_color{
         for (i,lab) in value_labels.iter().enumerate(){
         context.set_fill_style_str(palette_color(i));
         context.fill_rect(geo.start_x + geo.width+ geo.font_size, geo.start_y+2.0*geo.font_size*(i as f64), geo.font_size, geo.font_size);
@@ -485,62 +538,79 @@ fn draw_time_chart(state:&ChartState)->Result<(),JsValue>{
             context.set_global_alpha(0.1);
             context.fill_rect(bar.start_x, geo.start_y, bar.thickness, geo.height);
             context.set_global_alpha(1.0);
-            context.fill_rect(bar.start_x, bar.start_y, bar.thickness, -progress*bar.length);
-        }else{
-            let values=&bar.values;
-            if values.len()>1{
-                if geo.sub_stack{
-                    if geo.sub_color{
-                        let mut last_y_pos=bar.start_y;
-                        let mut last_y_neg=bar.start_y;
-                        for (j, p) in values.iter().enumerate(){
-                            context.set_fill_style_str(palette_color(j));
-                            if *p>0.0{
-                                context.fill_rect(bar.start_x, last_y_pos, bar.thickness, -progress*one_px*p);
-                                last_y_pos-=progress*one_px*p;
-                            }else{
-                                context.fill_rect(bar.start_x, last_y_neg, bar.thickness, -progress*one_px*p);
-                                last_y_neg-=progress*one_px*p;
-                            }
+        }
+        let values=&bar.values;
+        if values.len()>1{
+            if geo.sub_stack{
+                if geo.sub_color{
+                    let mut last_y_pos=bar.start_y;
+                    let mut last_y_neg=bar.start_y;
+                    for (j, p) in values.iter().enumerate(){
+                        context.set_fill_style_str(palette_color(j));
+                        if *p>0.0{
+                            context.fill_rect(bar.start_x, last_y_pos, bar.thickness, -progress*one_px*p);
+                            last_y_pos-=progress*one_px*p;
+                        }else{
+                            context.fill_rect(bar.start_x, last_y_neg, bar.thickness, -progress*one_px*p);
+                            last_y_neg-=progress*one_px*p;
+                        }
 
-                        }
-            
-                    }else{
-                        context.fill_rect(bar.start_x, bar.start_y, bar.thickness, -progress*bar.length);
                     }
+        
                 }else{
-                    if geo.sub_color{
-                        let mut last_x=bar.start_x;
-                        let thickness=bar.thickness/(values.len() as f64);
-                        for (j, p) in values.iter().enumerate(){
-                            context.set_fill_style_str(palette_color(j));
-                            context.fill_rect(last_x, bar.start_y,  thickness, -progress*one_px*p);
-                            last_x+=thickness;
-                        }
-                    }else{
-                        let mut last_x=bar.start_x;
-                        let thickness=bar.thickness/(values.len() as f64);
-                        for p in values{
-                            context.fill_rect(last_x, bar.start_y,  thickness, -progress*one_px*p);
-                            last_x+=thickness;
-                        }
-                    }
+                    context.fill_rect(bar.start_x, bar.start_y, bar.thickness, -progress*bar.length);
                 }
             }else{
-                if geo.sub_color && state.history.len()>1{
-                    context.set_fill_style_str(palette_color(i));
+                if geo.sub_color{
+                    let mut last_x=bar.start_x;
+                    let thickness=bar.thickness/(values.len() as f64);
+                    for (j, p) in values.iter().enumerate(){
+                        context.set_fill_style_str(palette_color(j));
+                        context.fill_rect(last_x, bar.start_y,  thickness, -progress*one_px*p);
+                        // let val= format!("{}",p);
+                        // context.fill_text(&val, last_x, bar.start_y-progress*one_px*p)?;
+                        last_x+=thickness;
+                    }
+                }else{
+                    let mut last_x=bar.start_x;
+                    let thickness=bar.thickness/(values.len() as f64);
+                    for p in values{
+                        context.fill_rect(last_x, bar.start_y,  thickness, -progress*one_px*p);
+                        last_x+=thickness;
+                    }
                 }
-                context.fill_rect(bar.start_x, bar.start_y, bar.thickness, -progress*bar.length);
             }
-            context.set_fill_style_str(text_color);
+        }else{
+            if geo.sub_color && state.history.len()>1{
+                context.set_fill_style_str(palette_color(i));
+            }
+            context.fill_rect(bar.start_x, bar.start_y, bar.thickness, -progress*bar.length);
         }
 
+        context.begin_path();
+        context.set_fill_style_str(line_color);
+        if i==0{    
+            context.move_to(geo.start_x, geo.start_y);
+            context.line_to(geo.start_x, geo.start_y+geo.height);
+        }
+        context.move_to(geo.start_x+bar.thickness*((i+1) as f64), geo.start_y);
+        context.line_to(geo.start_x+bar.thickness*((i+1) as f64), geo.start_y+geo.height);
+        context.stroke();
+
+        if bar_hover==Some(i){
+            context.set_fill_style_str(hover_color);
+        }else{
+            context.set_fill_style_str(text_color);
+        }
+       
         context.save();
         context.translate(bar.start_x+(bar.thickness/2.0), geo.start_y + geo.height + 0.3*geo.font_size)?;// move origin to where the text should be
         context.rotate(-std::f64::consts::PI / 2.0)?;
         context.set_text_align("right");
         context.set_text_baseline("middle");
-        context.fill_text(&bar.label, 0.0, 0.0)?;
+        let zdt = Timestamp::from_millisecond(bar.time)
+            .map_err(|e| JsValue::from_str(&format!("Failed to parse date: {e}")))?;
+        context.fill_text(&zdt.strftime("%Y-%m-%d %H:%M").to_string(), 0.0, 0.0)?;
         context.restore();
         context.set_fill_style_str(bar_color);
     }
@@ -550,7 +620,7 @@ fn draw_time_chart(state:&ChartState)->Result<(),JsValue>{
 
 pub fn render_time_chart(canvas_id: &str, points: Vec<DataPoint>, chart_label: String, config: TimeConfig, value_labels: Vec<String>, key_label: String)->Result<TimeChartController, JsValue>{
     config.validate()?;
-    let timechart = compute_bars(&points, &config, config.interval_start, config.interval_end, config.time_step)?;
+    let timechart = compute_bars(&points, &config, config.interval_start, config.interval_end, &config.time_step)?;
     let canvas=crate::canvas::get_canvas(canvas_id)?;
     let context=crate::canvas::get_context(&canvas)?;
     context.set_font(&config.font);
@@ -559,7 +629,7 @@ pub fn render_time_chart(canvas_id: &str, points: Vec<DataPoint>, chart_label: S
     let state = Rc::new(RefCell::new(ChartState {
         canvas: canvas.clone(),
         points,
-        history: vec![Level { label: chart_label.clone(), text_w:width, interval_start: config.interval_start, interval_end: config.interval_end, time_step: config.time_step }],
+        history: vec![Level { label: chart_label.clone(), text_w:width, interval_start: config.interval_start, interval_end: config.interval_end, time_step: config.time_step.clone() }],
         config,
         layout: timechart,
         anim_start: web_sys::window()

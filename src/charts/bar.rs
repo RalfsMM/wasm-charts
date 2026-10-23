@@ -252,11 +252,13 @@ pub fn compute_bars( mut points: Vec<DataPoint>, config: &BarConfig) -> BarChart
                 }
             });
         }
-        if point.value<min_value{
-            min_value=point.value;
-        }
-        if point.value>max_value{
-            max_value=point.value;
+        if config.sub_stack{
+            if point.value<min_value{
+                min_value=point.value;
+            }
+            if point.value>max_value{
+                max_value=point.value;
+            }
         }
     });
 
@@ -290,7 +292,7 @@ pub fn compute_bars( mut points: Vec<DataPoint>, config: &BarConfig) -> BarChart
     //cik iedalas bus charta uz negativo virzienu
     let step_amount_neg=
     if min_value != 0.0 {
-        (min_value.abs()/step).ceil()
+        (min_value.abs()/step).ceil()+1.0
     }else{
         0.0
     };
@@ -483,52 +485,54 @@ fn draw_bar_chart( state:&ChartState, now: f64 )->Result<(), JsValue>{
                 context.set_global_alpha(0.1);
                 context.fill_rect(bar.start_x-bar.part*0.2, geo.start_y, bar.part, geo.height);
                 context.set_global_alpha(1.0);
-                context.fill_rect(bar.start_x, bar.start_y, bar.thickness, -progress*bar.length);
-            }else{
-                if let Some(subs)=&bar.sub_points{
-                    if geo.sub_stack{
-                        if geo.sub_color{
-                            let mut last_y_pos=bar.start_y;
-                            let mut last_y_neg=bar.start_y;
-                            for (j, p) in subs.iter().enumerate(){
-                                context.set_fill_style_str(palette_color(j));
-                                if p.value>0.0{
-                                    context.fill_rect(bar.start_x, last_y_pos, bar.thickness, -progress*one_px*p.value);
-                                    last_y_pos-=progress*one_px*p.value;
-                                }else{
-                                    context.fill_rect(bar.start_x, last_y_neg, bar.thickness, -progress*one_px*p.value);
-                                    last_y_neg-=progress*one_px*p.value;
-                                }
+            }
+            if let Some(subs)=&bar.sub_points{
+                if geo.sub_stack{
+                    if geo.sub_color{
+                        let mut last_y_pos=bar.start_y;
+                        let mut last_y_neg=bar.start_y;
+                        for (j, p) in subs.iter().enumerate(){
+                            context.set_fill_style_str(palette_color(j));
+                            if p.value>0.0{
+                                context.fill_rect(bar.start_x, last_y_pos, bar.thickness, -progress*one_px*p.value);
+                                last_y_pos-=progress*one_px*p.value;
+                            }else{
+                                context.fill_rect(bar.start_x, last_y_neg, bar.thickness, -progress*one_px*p.value);
+                                last_y_neg-=progress*one_px*p.value;
+                            }
 
-                            }
-                
-                        }else{
-                            context.fill_rect(bar.start_x, bar.start_y, bar.thickness, -progress*bar.length);
                         }
+            
                     }else{
-                        if geo.sub_color{
-                            let mut last_x=bar.start_x;
-                            let thickness=bar.thickness/(subs.len() as f64);
-                            for (j, p) in subs.iter().enumerate(){
-                                context.set_fill_style_str(palette_color(j));
-                                context.fill_rect(last_x, bar.start_y,  thickness, -progress*one_px*p.value);
-                                last_x+=thickness;
-                            }
-                        }else{
-                            let mut last_x=bar.start_x;
-                            let thickness=bar.thickness/(subs.len() as f64);
-                            for p in subs{
-                                context.fill_rect(last_x, bar.start_y,  thickness, -progress*one_px*p.value);
-                                last_x+=thickness;
-                            }
-                        }
+                        context.fill_rect(bar.start_x, bar.start_y, bar.thickness, -progress*bar.length);
                     }
                 }else{
-                    if geo.sub_color && state.history.len()>1{
-                        context.set_fill_style_str(palette_color(i));
+                    if geo.sub_color{
+                        let mut last_x=bar.start_x;
+                        let thickness=bar.thickness/(subs.len() as f64);
+                        for (j, p) in subs.iter().enumerate(){
+                            context.set_fill_style_str(palette_color(j));
+                            context.fill_rect(last_x, bar.start_y,  thickness, -progress*one_px*p.value);
+                            last_x+=thickness;
+                        }
+                    }else{
+                        let mut last_x=bar.start_x;
+                        let thickness=bar.thickness/(subs.len() as f64);
+                        for p in subs{
+                            context.fill_rect(last_x, bar.start_y,  thickness, -progress*one_px*p.value);
+                            last_x+=thickness;
+                        }
                     }
-                    context.fill_rect(bar.start_x, bar.start_y, bar.thickness, -progress*bar.length);
                 }
+            }else{
+                if geo.sub_color && state.history.len()>1{
+                    context.set_fill_style_str(palette_color(i));
+                }
+                context.fill_rect(bar.start_x, bar.start_y, bar.thickness, -progress*bar.length);
+            }
+            if bar_hover==Some(i){
+                context.set_fill_style_str(hover_color);
+            }else{
                 context.set_fill_style_str(text_color);
             }
 
@@ -629,50 +633,52 @@ fn draw_bar_chart( state:&ChartState, now: f64 )->Result<(), JsValue>{
                 context.set_global_alpha(0.1);
                 context.fill_rect(geo.start_x,bar.start_y-bar.part*0.2, geo.width, bar.part);
                 context.set_global_alpha(1.0);
-                context.fill_rect(bar.start_x, bar.start_y, progress*bar.length, bar.thickness);
-            }else{
-                if let Some(subs) = &bar.sub_points{
-                    if geo.sub_stack{
-                        if geo.sub_color{
-                            let mut last_x_pos=bar.start_x;
-                            let mut last_x_neg=bar.start_x;
-                            for (j, p) in subs.iter().enumerate(){
-                                context.set_fill_style_str(palette_color(j));
-                                if p.value>0.0{
-                                    context.fill_rect(last_x_pos,bar.start_y, progress*one_px*p.value,bar.thickness,);
-                                    last_x_pos+=progress*one_px*p.value
-                                }else{
-                                    context.fill_rect(last_x_neg, bar.start_y, progress*one_px*p.value, bar.thickness);
-                                    last_x_neg+=progress*one_px*p.value;
-                                }
+            }
+            if let Some(subs) = &bar.sub_points{
+                if geo.sub_stack{
+                    if geo.sub_color{
+                        let mut last_x_pos=bar.start_x;
+                        let mut last_x_neg=bar.start_x;
+                        for (j, p) in subs.iter().enumerate(){
+                            context.set_fill_style_str(palette_color(j));
+                            if p.value>0.0{
+                                context.fill_rect(last_x_pos,bar.start_y, progress*one_px*p.value,bar.thickness,);
+                                last_x_pos+=progress*one_px*p.value
+                            }else{
+                                context.fill_rect(last_x_neg, bar.start_y, progress*one_px*p.value, bar.thickness);
+                                last_x_neg+=progress*one_px*p.value;
                             }
-                        }else{
-                            context.fill_rect(bar.start_x, bar.start_y, progress*bar.length, bar.thickness);
                         }
                     }else{
-                        if geo.sub_color{
-                            let mut last_y=bar.start_y;
-                            let thickness=bar.thickness/(subs.len() as f64);
-                            for (j, p) in subs.iter().enumerate(){
-                                context.set_fill_style_str(palette_color(j));
-                                context.fill_rect(bar.start_x, last_y,  progress*one_px*p.value, thickness);
-                                last_y+=thickness;
-                            }
-                        }else{
-                            let mut last_y=bar.start_y;
-                            let thickness=bar.thickness/(subs.len() as f64);
-                            for p in subs{
-                                context.fill_rect(bar.start_x, last_y, progress*p.value*p.value, thickness);
-                                last_y+=thickness;
-                            }
-                        }
+                        context.fill_rect(bar.start_x, bar.start_y, progress*bar.length, bar.thickness);
                     }
                 }else{
-                    if geo.sub_color && state.history.len()>1{
-                        context.set_fill_style_str(palette_color(i));
+                    if geo.sub_color{
+                        let mut last_y=bar.start_y;
+                        let thickness=bar.thickness/(subs.len() as f64);
+                        for (j, p) in subs.iter().enumerate(){
+                            context.set_fill_style_str(palette_color(j));
+                            context.fill_rect(bar.start_x, last_y,  progress*one_px*p.value, thickness);
+                            last_y+=thickness;
+                        }
+                    }else{
+                        let mut last_y=bar.start_y;
+                        let thickness=bar.thickness/(subs.len() as f64);
+                        for p in subs{
+                            context.fill_rect(bar.start_x, last_y, progress*p.value*p.value, thickness);
+                            last_y+=thickness;
+                        }
                     }
-                    context.fill_rect(bar.start_x, bar.start_y, progress*bar.length, bar.thickness);
                 }
+            }else{
+                if geo.sub_color && state.history.len()>1{
+                    context.set_fill_style_str(palette_color(i));
+                }
+                context.fill_rect(bar.start_x, bar.start_y, progress*bar.length, bar.thickness);
+            }
+            if bar_hover==Some(i){
+                context.set_fill_style_str(hover_color);
+            }else{
                 context.set_fill_style_str(text_color);
             }
             context.set_text_align("right");
