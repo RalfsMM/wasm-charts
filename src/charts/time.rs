@@ -4,9 +4,8 @@ use wasm_bindgen::prelude::*;
 use std::rc::Rc;
 use std::cell::RefCell;
 use std::collections::HashMap;
-use jiff::civil::DateTime;
-use jiff::Timestamp;
-use web_sys::console;
+use jiff::{Span, Timestamp, ToSpan, Unit, Zoned, civil::DateTime, tz::TimeZone};
+//use web_sys::console;
 
 thread_local! {
     static CHARTS: RefCell<HashMap<String, TimeChartController>> = RefCell::new(HashMap::new());
@@ -43,33 +42,34 @@ struct ChartState {
 
 impl ChartState{
     pub fn on_click(&mut self, mx: f64, my: f64) ->Result<(), wasm_bindgen::JsValue>{
-        // if let Some(title_index) = self.hit_test_titles(mx, my) {
-        //     if title_index < self.history.len() - 1 {
-        //         self.history.truncate(title_index + 1);
-
-        //         self.current_level()?;
-        //     }
-        // }else if let Some(i) = self.hit_test_bar(mx, my) {
-        //     let bar=&self.layout.bars[i];
-        //     if let Some(subs) = &bar.sub_points {
-        //         self.history.push(Level {
-        //             label: bar.label.clone(),
-        //             text_w: self.measure(&bar.label)?,
-        //             points: subs.clone(),
-        //         });
-        //         self.current_level()?;
-        //     }
-        // }
+        if let Some(title_index) = self.hit_test_titles(mx, my) {
+            if title_index < self.history.len() - 1 {
+                self.history.truncate(title_index + 1);
+                self.current_level()?;
+            }
+        }else if let Some(i) = self.hit_test_bar(mx, my) {
+            let bar=&self.layout.bars[i];
+            let current_level = self.history.last().unwrap();
+            if current_level.time_step !="1min" {
+                self.history.push(Level {
+                    label: bar.time.to_string(),
+                    text_w: self.measure(&bar.time.to_string())?,
+                    interval_start: bar.time.timestamp().as_millisecond(),
+                    interval_end: step_to_ms(&bar.time, &current_level.time_step)?,
+                    time_step:next_step(&current_level.time_step)?,
+                });
+                self.current_level()?;
+            }
+        }
         Ok(())
     }
     pub fn current_level(&mut self)->Result<(), wasm_bindgen::JsValue>{
-        // self.hover_bar=None;
-        // self.hover_title=None;
-        // let current_level = self.history.last().unwrap();
-        // self.layout = compute_bars(current_level.points.clone(), &self.config);
-
-        // self.anim_start = now_ms();
-        // self.dirty = true;
+        self.hover_bar=None;
+        self.hover_title=None;
+        let current_level = self.history.last().unwrap();
+        self.layout = compute_bars(&self.points, &self.config, current_level.interval_start, current_level.interval_end, &current_level.time_step)?;
+        self.anim_start = now_ms();
+        self.dirty = true;
         Ok(())
     }
 
@@ -121,6 +121,7 @@ impl ChartState{
         self.context.set_font(&self.config.font);
         Ok(self.context.measure_text(text)?.width())
     }
+
 }
 
 #[derive(Clone, Deserialize)]
@@ -186,7 +187,7 @@ impl TimeConfig {
 }
 
 pub struct Bar{
-    pub time: i64,
+    pub time: Zoned,
     pub values: Vec<f64>,
     pub thickness: f64,
     pub length: f64,
@@ -195,7 +196,7 @@ pub struct Bar{
 }
 
 pub struct TimePoint{
-    time:i64,
+    time:Zoned,
     values:Vec<f64>,
 }
 pub struct TimeChart{
@@ -231,88 +232,199 @@ fn palette_color(index: usize) -> &'static str {
     colors[index % colors.len()]
 }
 
-pub fn compute_bars(data_points: &[DataPoint], config: &TimeConfig, interval_start:i64, interval_end:i64, time_step_string:&str)->Result<TimeChart, JsValue>{
-    let time_step=match time_step_string{
-        "1min"=>60*1000,
-        "5min"=>5*60*1000,
-        "10min"=>10*60*1000,
-        "15min"=>15*60*1000,
-        "30min"=>30*60*1000,
-        "1h"=>60*60*1000,
-        "5h"=>5*60*60*1000,
-        "12h"=>12*60*60*1000,
-        "d"=>24*60*60*1000,
-        "w"=>7*24*60*60*1000,
-        "m"=>30*24*60*60*1000,
-        "y"=>12*30*24*60*60*1000,
-        _=>0,
+fn start_of_week(ms: i64, tz: &TimeZone)->Result<Zoned, jiff::Error>{
+    let mut zoned = ms_to_zoned(ms, tz)?.start_of_day()?;
+    while zoned.weekday().to_monday_zero_offset()!=0{
+        zoned-=1.day();
+    }
+    Ok(zoned)
+}
+
+fn next_step(step: &str)->Result<String, JsValue>{
+    match step{
+        "1min"=>Ok(String::from("1min")),
+        "5min"=>Ok(String::from("5min")),
+        "10min"=>Ok(String::from("5min")),
+        "15min"=>Ok(String::from("10min")),
+        "30min"=>Ok(String::from("15min")),
+        "1h"=>Ok(String::from("30min")),
+        "1d"=>Ok(String::from("1h")),
+        "1w"=>Ok(String::from("1d")),
+        "1m"=>Ok(String::from("1w")),
+        "1y"=>Ok(String::from("1m")),
+        _=>return Err(JsValue::from_str("time step incorrect")), 
+    }
+}
+
+fn step_to_ms(start:&Zoned, step: &str)->Result<i64, JsValue>{
+    let res = match step{
+        "1min"=>start+1.minute(),
+        "5min"=>start+5.minutes(),
+        "10min"=>start+10.minutes(),
+        "15min"=>start+15.minutes(),
+        "30min"=>start+30.minutes(),
+        "1h"=>start+1.hour(),
+        "1d"=>start+1.day(),
+        "1w"=>start+1.week(),
+        "1m"=>start+1.month(),
+        "1y"=>start+1.year(),
+        _=>return Err(JsValue::from_str("time step incorrect")), 
     };
+    Ok(res.timestamp().as_millisecond())
+}
+
+fn floor_zoned(ms: i64, tz: &TimeZone, unit: &Unit) -> Result<Zoned, jiff::Error> {
+    let res = match unit{
+        Unit::Year=>ms_to_zoned(ms, tz)?
+            .first_of_year()?
+            .first_of_month()?
+            .start_of_day()?,
+        Unit::Month =>ms_to_zoned(ms, tz)?
+            .first_of_month()?
+            .start_of_day()?,
+        Unit::Week =>start_of_week(ms,tz)?,
+        Unit::Day =>ms_to_zoned(ms, tz)?
+            .start_of_day()?,
+        Unit::Hour|Unit::Minute =>ms_to_zoned(ms, tz)?,
+        _ =>return Err(jiff::Error::from_args(format_args!("something failed"))),
+    };
+    Ok(res)
+}
+
+fn ceil_zoned(ms: i64, tz: &TimeZone, unit: &Unit) -> Result<Zoned, jiff::Error> {
+    let res = match unit{
+        Unit::Year=>ms_to_zoned(ms, tz)?
+            .first_of_year()?
+            .first_of_month()?
+            .start_of_day()?,
+        Unit::Month =>ms_to_zoned(ms, tz)?
+            .first_of_month()?
+            .start_of_day()?,
+        Unit::Week =>start_of_week(ms,tz)?,
+        Unit::Day =>ms_to_zoned(ms, tz)?
+            .start_of_day()?,
+        Unit::Hour|Unit::Minute =>ms_to_zoned(ms, tz)?,
+        _ =>return Err(jiff::Error::from_args(format_args!("something failed"))),
+    };
+    if res.timestamp().as_millisecond() == ms {
+        return Ok(res);
+    }
+
+    match unit{
+        Unit::Year=>res.checked_add(1.year()),
+        Unit::Month =>res.checked_add(1.month()),
+        Unit::Week =>res.checked_add(1.week()),
+        Unit::Day =>res.checked_add(1.day()),
+        Unit::Hour|Unit::Minute =>Ok(res),
+        _ =>Err(jiff::Error::from_args(format_args!("something failed"))),
+    }
+}
+
+fn count_buckets(start: &Zoned, end: &Zoned, unit: &Unit)->Result<usize, jiff::Error>{
+    let span =start.until((*unit, end))?;
+    let res = match unit{
+        Unit::Year=>span.get_years() as i64,
+        Unit::Month =>span.get_months()as i64,
+        Unit::Week =>span.get_weeks()as i64,
+        Unit::Day =>span.get_days()as i64,
+        Unit::Hour =>span.get_hours()as i64,
+        Unit::Minute =>span.get_minutes(),
+        _ =>return Err(jiff::Error::from_args(format_args!("something failed"))),
+
+    };
+    Ok(res as usize)
+}
+
+fn ms_to_zoned(ms: i64, tz: &TimeZone)->Result<Zoned, jiff::Error>{
+    Ok(Timestamp::from_millisecond(ms)?.to_zoned(tz.clone()))
+}
+
+fn str_to_zoned(ms: &str, tz: &TimeZone)->Result<Zoned, jiff::Error>{
+    Ok(Timestamp::from_millisecond(to_unix_ms(ms)?)?.to_zoned(tz.clone()))
+}
+
+fn time_helper(unit: &Unit, steps: i64, start: &Zoned)->Result<Zoned, jiff::Error>{
+    let res =match unit{
+        Unit::Year=>start + steps.years(),
+        Unit::Month =>start + steps.months(),
+        Unit::Week =>start + steps.weeks(),
+        Unit::Day =>start + steps.days(),
+        Unit::Hour=>start + steps.hours(),
+        Unit::Minute =>start + steps.minutes(),
+        _ =>return Err(jiff::Error::from_args(format_args!("something failed"))),
+    };
+    Ok(res)
+}
+
+pub fn compute_bars(data_points: &[DataPoint], config: &TimeConfig, interval_start:i64, interval_end:i64, time_step_string:&str)->Result<TimeChart, JsValue>{
+    
+    let tz=TimeZone::get(&config.time_zone)
+        .map_err(|_| JsValue::from_str("failed to get timezone"))?;
+
+    let time_step_count:usize =match time_step_string{
+        "1min"|"1h"|"1d"|"1w"|"1m"|"1y"=>1,
+        "5min"=>5,
+        "10min"=>10,
+        "15min"=>15,
+        "30min"=>30,
+        _=>return Err(JsValue::from_str("time step incorrect")),
+    };
+
+    let time_unit:Unit =match time_step_string{
+        "1min"|"5min"|"10min"|"15min"|"30min"=>Unit::Minute,
+        "1h"=>Unit::Hour,
+        "1d"=>Unit::Day,
+        "1w"=>Unit::Week,
+        "1m"=>Unit::Month,
+        "1y"=>Unit::Year,
+        _=>return Err(JsValue::from_str("time step incorrect")),
+    };
+    
     if interval_end <= interval_start {
         return Err(JsValue::from_str("interval_end must be greater than interval_start"));
     }
-    if time_step <= 0 {
-        return Err(JsValue::from_str("time_step must be positive"));
+
+    let interval_start_rounded=floor_zoned(interval_start, &tz, &time_unit)
+        .map_err(|_| JsValue::from_str("floor zoned failed"))?;
+    let mut interval_end_rounded=ceil_zoned(interval_end, &tz, &time_unit)
+        .map_err(|_| JsValue::from_str("ceil zoned failed"))?;
+
+    if time_unit == Unit::Minute {
+        let step_ms = time_step_count as i64 * 60 * 1000;
+        let duration_ms = interval_end_rounded.timestamp().as_millisecond()
+            - interval_start_rounded.timestamp().as_millisecond();
+        let remainder_ms = duration_ms % step_ms;
+        let adjustment_ms = (step_ms - remainder_ms) % step_ms;
+
+        interval_end_rounded += Span::new().milliseconds(adjustment_ms);
     }
+
+
+    if interval_end_rounded <= interval_start_rounded {
+        return Err(JsValue::from_str("interval_end must be greater than interval_start"));
+    }
+
+    let bucket_count =count_buckets(&interval_start_rounded, &interval_end_rounded, &time_unit)
+        .map_err(|_| JsValue::from_str("Month count failed"))?/time_step_count;
     
-    let duration = interval_end
-        .checked_sub(interval_start)
-        .ok_or_else(|| JsValue::from_str("time interval is too large"))?;
+    let series_count = data_points
+        .iter()
+        .filter_map(|p| p.sub_points.as_ref().map(|s| s.len()))
+        .max()
+        .unwrap_or(0);
 
-    let mut buckets;
+    let mut buckets = vec![vec![0.0; series_count]; bucket_count];
 
-
-    if time_step>=30*24*60*60*1000{
-        //seit jamaina
-        let bucket_count = duration / time_step;
-        let interval_end_rounded= interval_end-(duration % time_step);
-
-        let bucket_count = usize::try_from(bucket_count)
-            .map_err(|_| JsValue::from_str("time interval contains too many buckets"))?;
-        
-        let series_count = data_points
-            .iter()
-            .filter_map(|p| p.sub_points.as_ref().map(|s| s.len()))
-            .max()
-            .unwrap_or(0);
-
-        buckets = vec![vec![0.0; series_count]; bucket_count];
-
-        for p in data_points {
-            let Some(subs) = p.sub_points.as_ref() else { continue };
-            let Ok(time) = to_unix_ms(&p.label) else { continue };
-            if time < interval_start || time >= interval_end_rounded {
-                continue;
-            }
-            let idx = ((time - interval_start) / time_step) as usize;
-            for (acc, s) in buckets[idx].iter_mut().zip(subs) {
-                *acc += s.value;
-            }
+    for p in data_points {
+        let Some(subs) = p.sub_points.as_ref() else { continue };
+        let Ok(time) = str_to_zoned(&p.label, &tz) else { continue };
+        if time < interval_start_rounded || time >= interval_end_rounded {
+            continue;
         }
-    }else{
-        let bucket_count = duration / time_step;//rāda tikai visus veselos steps intervālā. Piemeram ja intervals ir 27 min un step ir 5 min, bus 5 buckets un atlikusas 2 min cutoff
-        let interval_end_rounded= interval_end-(duration % time_step);
-
-        let bucket_count = usize::try_from(bucket_count)
-            .map_err(|_| JsValue::from_str("time interval contains too many buckets"))?;
-        
-        let series_count = data_points
-            .iter()
-            .filter_map(|p| p.sub_points.as_ref().map(|s| s.len()))
-            .max()
-            .unwrap_or(0);
-
-        buckets = vec![vec![0.0; series_count]; bucket_count];
-
-        for p in data_points {
-            let Some(subs) = p.sub_points.as_ref() else { continue };
-            let Ok(time) = to_unix_ms(&p.label) else { continue };
-            if time < interval_start || time >= interval_end_rounded {
-                continue;
-            }
-            let idx = ((time - interval_start) / time_step) as usize;
-            for (acc, s) in buckets[idx].iter_mut().zip(subs) {
-                *acc += s.value;
-            }
+        let idx =count_buckets(&interval_start_rounded, &time, &time_unit)
+            .map_err(|_| JsValue::from_str("Month count failed"))?/time_step_count;
+        for (acc, s) in buckets[idx].iter_mut().zip(subs) {
+            *acc += s.value;
         }
     }
 
@@ -340,7 +452,12 @@ pub fn compute_bars(data_points: &[DataPoint], config: &TimeConfig, interval_sta
             if min<min_value{
                 min_value=min;
             }
-            TimePoint {time: interval_start + i as i64 * time_step, values }
+
+            let time= time_helper(&time_unit, (i*time_step_count)as i64, &interval_start_rounded).unwrap();
+            TimePoint {
+                time,
+                values 
+            }
         }).collect();
 
 
@@ -608,9 +725,7 @@ fn draw_time_chart(state:&ChartState)->Result<(),JsValue>{
         context.rotate(-std::f64::consts::PI / 2.0)?;
         context.set_text_align("right");
         context.set_text_baseline("middle");
-        let zdt = Timestamp::from_millisecond(bar.time)
-            .map_err(|e| JsValue::from_str(&format!("Failed to parse date: {e}")))?;
-        context.fill_text(&zdt.strftime("%Y-%m-%d %H:%M").to_string(), 0.0, 0.0)?;
+        context.fill_text(&bar.time.strftime("%Y-%m-%d %H:%M").to_string(), 0.0, 0.0)?;
         context.restore();
         context.set_fill_style_str(bar_color);
     }
